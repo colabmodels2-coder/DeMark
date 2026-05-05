@@ -141,7 +141,7 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
             countdown_text = "Buy countdown initiated. Waiting for first qualifying bar (Close ≤ Low[2])."
 
         if recycled_buy:
-            countdown_text += " [Recycled: same-direction Setup 9 restarted count from bar 1]"
+            countdown_text += " [Recycled: a subsequent overlapping same-direction Setup reached the recycle threshold and replaced the prior 13 with R]"
         if sell_setup > 0 and sell_setup < 9:
             countdown_text += f" Note: sell setup {sell_setup}/9 forming — if it reaches 9, this countdown is cancelled."
 
@@ -175,7 +175,7 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
             countdown_text = "Sell countdown initiated. Waiting for first qualifying bar (Close ≥ High[2])."
 
         if recycled_sell:
-            countdown_text += " [Recycled: same-direction Setup 9 restarted count from bar 1]"
+            countdown_text += " [Recycled: a subsequent overlapping same-direction Setup reached the recycle threshold and replaced the prior 13 with R]"
         if buy_setup > 0 and buy_setup < 9:
             countdown_text += f" Note: buy setup {buy_setup}/9 forming — if it reaches 9, this countdown is cancelled."
 
@@ -189,27 +189,27 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
     if pd.notna(tdst_buy) and pd.notna(tdst_sell):
         tdst_buy_float = float(tdst_buy)
         tdst_sell_float = float(tdst_sell)
-        if close > tdst_sell_float:
+        if close > tdst_buy_float:
             tdst_text = (
-                f"Price {close:,.2f} above TDST Resistance {tdst_sell_float:,.2f}. "
+                f"Price {close:,.2f} above TDST Resistance {tdst_buy_float:,.2f}. "
                 f"Structural strength confirmed. Bullish bias intact."
             )
-        elif close < tdst_buy_float:
+        elif close < tdst_sell_float:
             tdst_text = (
-                f"Price {close:,.2f} below TDST Support {tdst_buy_float:,.2f}. "
+                f"Price {close:,.2f} below TDST Support {tdst_sell_float:,.2f}. "
                 f"Structural weakness confirmed. Bearish bias intact."
             )
         else:
             tdst_text = (
-                f"Price {close:,.2f} between TDST Support {tdst_buy_float:,.2f} and Resistance {tdst_sell_float:,.2f}. "
+                f"Price {close:,.2f} between TDST Support {tdst_sell_float:,.2f} and Resistance {tdst_buy_float:,.2f}. "
                 f"Transitional structure."
             )
     elif pd.notna(tdst_buy):
         tdst_buy_float = float(tdst_buy)
-        tdst_text = f"TDST Support {tdst_buy_float:,.2f}. Price {'above' if close > tdst_buy_float else 'below'} support."
+        tdst_text = f"TDST Resistance {tdst_buy_float:,.2f}. Price {'above' if close > tdst_buy_float else 'below'} resistance."
     elif pd.notna(tdst_sell):
         tdst_sell_float = float(tdst_sell)
-        tdst_text = f"TDST Resistance {tdst_sell_float:,.2f}. Price {'above' if close > tdst_sell_float else 'below'} resistance."
+        tdst_text = f"TDST Support {tdst_sell_float:,.2f}. Price {'above' if close > tdst_sell_float else 'below'} support."
 
     # =========================================================================
     # TREND STRENGTH — combination of setup + countdown + TDST
