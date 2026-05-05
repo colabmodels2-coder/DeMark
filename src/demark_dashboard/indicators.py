@@ -128,6 +128,8 @@ def _countdowns(
     TD Countdown: 13 bars comparing close to low/high 2 bars earlier.
     Buy Countdown: 13 closes <= low[2 bars ago]
     Sell Countdown: 13 closes >= high[2 bars ago]
+    MUTUAL EXCLUSIVITY: Only one active countdown direction at a time.
+    When opposite-direction Setup 9 completes, it cancels the prior countdown.
     Returns: buy_countdown, sell_countdown, deferred_buy (+), deferred_sell (+), recycled_buy (R), recycled_sell (R)
     """
     close = df["Close"]
@@ -145,8 +147,8 @@ def _countdowns(
     active_sell = False
     bcount = 0
     scount = 0
-    buy_cd8_low = np.inf
-    sell_cd8_high = -np.inf
+    buy_cd8_close = np.nan  # Bar 8 reference uses CLOSE, not Low
+    sell_cd8_close = np.nan  # Bar 8 reference uses CLOSE, not High
 
     for i in range(len(df)):
         if i < 2:
@@ -156,35 +158,45 @@ def _countdowns(
         if active_buy and 0 < bcount < 13 and buy_setup.iloc[i] == 9:
             recycled_buy.iloc[i] = True
             bcount = 0
-            buy_cd8_low = np.inf
+            buy_cd8_close = np.nan
 
         if active_sell and 0 < scount < 13 and sell_setup.iloc[i] == 9:
             recycled_sell.iloc[i] = True
             scount = 0
-            sell_cd8_high = -np.inf
+            sell_cd8_close = np.nan
 
-        # Initiate countdown on completed setup
-        if buy_setup.iloc[i] == 9:
+        # MUTUAL EXCLUSIVITY: Opposite-direction Setup 9 cancels prior countdown
+        if buy_setup.iloc[i] == 9 and not active_buy:
+            # Initiate Buy Countdown: cancel any Sell Countdown
             active_buy = True
+            active_sell = False
             bcount = 0
-            buy_cd8_low = np.inf
-
-        if sell_setup.iloc[i] == 9:
-            active_sell = True
             scount = 0
-            sell_cd8_high = -np.inf
+            buy_cd8_close = np.nan
+            sell_cd8_close = np.nan
 
-        # Process buy countdown
-        if active_buy:
+        if sell_setup.iloc[i] == 9 and not active_sell:
+            # Initiate Sell Countdown: cancel any Buy Countdown
+            active_sell = True
+            active_buy = False
+            scount = 0
+            bcount = 0
+            sell_cd8_close = np.nan
+            buy_cd8_close = np.nan
+
+        # Process buy countdown (only if active and sell not active)
+        if active_buy and not active_sell:
             if close.iloc[i] <= low.iloc[i - 2]:
                 bcount += 1
                 if bcount <= 13:
                     buy_countdown.iloc[i] = bcount
                     if bcount == 8:
-                        buy_cd8_low = low.iloc[i]
+                        buy_cd8_close = close.iloc[i]  # BOOK RULE: Save Close[8], not Low[8]
                     elif bcount == 13:
-                        # Check completion conditions
-                        if low.iloc[i] <= buy_cd8_low and close.iloc[i] <= low.iloc[i - 2]:
+                        # Check completion conditions per book:
+                        # 1. Low[13] <= Close[8]
+                        # 2. Close[13] <= Low[2]
+                        if low.iloc[i] <= buy_cd8_close and close.iloc[i] <= low.iloc[i - 2]:
                             buy_countdown.iloc[i] = 13
                         else:
                             deferred_buy.iloc[i] = True
@@ -198,17 +210,19 @@ def _countdowns(
                 elif bcount == 0:
                     active_buy = False
 
-        # Process sell countdown
-        if active_sell:
+        # Process sell countdown (only if active and buy not active)
+        if active_sell and not active_buy:
             if close.iloc[i] >= high.iloc[i - 2]:
                 scount += 1
                 if scount <= 13:
                     sell_countdown.iloc[i] = scount
                     if scount == 8:
-                        sell_cd8_high = high.iloc[i]
+                        sell_cd8_close = close.iloc[i]  # BOOK RULE: Save Close[8], not High[8]
                     elif scount == 13:
-                        # Check completion conditions
-                        if high.iloc[i] >= sell_cd8_high and close.iloc[i] >= high.iloc[i - 2]:
+                        # Check completion conditions per book:
+                        # 1. High[13] >= Close[8]
+                        # 2. Close[13] >= High[2]
+                        if high.iloc[i] >= sell_cd8_close and close.iloc[i] >= high.iloc[i - 2]:
                             sell_countdown.iloc[i] = 13
                         else:
                             deferred_sell.iloc[i] = True
