@@ -10,16 +10,14 @@ def build_figure(
     symbol: str,
     timeframe_label: str = "Daily",
     show_td_sequential: bool = True,
-    show_td_wave: bool = False,
 ) -> go.Figure:
-    """Build interactive OHLC chart with TD Sequential and/or TD Wave overlays.
+    """Build interactive OHLC chart with TD Sequential overlays.
     
     Args:
         df: DataFrame with OHLC and DeMark indicator columns
         symbol: Ticker symbol
         timeframe_label: "Daily" or "Weekly"
         show_td_sequential: Display TD Sequential setup/countdown overlays
-        show_td_wave: Display TD D-Wave structure and Fibonacci projections
     """
     fig = make_subplots(
         rows=2,
@@ -124,33 +122,44 @@ def build_figure(
                 col=1,
             )
 
-        # TDST resistance from completed Buy Setup
-        fig.add_trace(
-            go.Scatter(
-                x=df.index,
-                y=df["tdst_buy"],
-                mode="lines",
-                name="TDST Buy Resistance",
-                line=dict(color="#0ea5e9", width=1.5, dash="dot"),
-                fill=None,
-            ),
-            row=1,
-            col=1,
-        )
+        # TDST levels are shown as segmented lines so each level ends when replaced.
+        def _add_tdst_segmented(series: pd.Series, name: str, color: str) -> None:
+            valid = series.dropna()
+            if valid.empty:
+                return
 
-        # TDST support from completed Sell Setup
-        fig.add_trace(
-            go.Scatter(
-                x=df.index,
-                y=df["tdst_sell"],
-                mode="lines",
-                name="TDST Sell Support",
-                line=dict(color="#f97316", width=1.5, dash="dot"),
-                fill=None,
-            ),
-            row=1,
-            col=1,
-        )
+            positions = [df.index.get_loc(idx) for idx in valid.index]
+            if not positions:
+                return
+
+            starts = [positions[0]]
+            for p in positions[1:]:
+                prev = p - 1
+                if prev < 0 or pd.isna(series.iloc[prev]) or float(series.iloc[p]) != float(series.iloc[prev]):
+                    starts.append(p)
+
+            for i, start_pos in enumerate(starts):
+                end_pos = starts[i + 1] - 1 if i + 1 < len(starts) else positions[-1]
+                if end_pos < start_pos:
+                    continue
+                level = float(series.iloc[start_pos])
+                fig.add_trace(
+                    go.Scatter(
+                        x=[df.index[start_pos], df.index[end_pos]],
+                        y=[level, level],
+                        mode="lines",
+                        name=name,
+                        line=dict(color=color, width=1.5, dash="dot"),
+                        showlegend=(i == 0),
+                        hoverinfo="text+y",
+                        hovertext=[name, name],
+                    ),
+                    row=1,
+                    col=1,
+                )
+
+        _add_tdst_segmented(df["tdst_buy"], "TDST Buy Resistance", "#0ea5e9")
+        _add_tdst_segmented(df["tdst_sell"], "TDST Sell Support", "#f97316")
 
         # Buy Setup completion (9)
         buy9 = df[df["buy_setup"] == 9]
@@ -377,143 +386,6 @@ def build_figure(
                 col=1,
             )
 
-    # ========================================================================
-    # TD D-WAVE INDICATORS (Optional)
-    # ========================================================================
-    if show_td_wave:
-        # Waves 1-5 (Impulse pivots)
-        for wave_col, wave_name, color in [
-            ("wave_1", "Wave 1", "#3b82f6"),
-            ("wave_2", "Wave 2", "#2563eb"),
-            ("wave_3", "Wave 3", "#3b82f6"),
-            ("wave_4", "Wave 4", "#2563eb"),
-            ("wave_5", "Wave 5", "#3b82f6"),
-        ]:
-            wave_data = df[df[wave_col].notna()]
-            if not wave_data.empty:
-                fig.add_trace(
-                    go.Scatter(
-                        x=wave_data.index,
-                        y=wave_data[wave_col],
-                        mode="markers+text",
-                        marker=dict(size=12, color=color, symbol="circle"),
-                        text=[wave_name.split()[-1]] * len(wave_data),
-                        textposition="middle right",
-                        textfont=dict(size=11, color=color, family="monospace"),
-                        name=wave_name,
-                        hovertext=[f"{wave_name} pivot" for _ in wave_data.index],
-                        hoverinfo="x+text+y",
-                    ),
-                    row=1,
-                    col=1,
-                )
-
-        # Waves A-B-C (Corrective pivots)
-        for wave_col, wave_name, color in [
-            ("wave_a", "Wave A", "#ef4444"),
-            ("wave_b", "Wave B", "#f97316"),
-            ("wave_c", "Wave C", "#ef4444"),
-        ]:
-            wave_data = df[df[wave_col].notna()]
-            if not wave_data.empty:
-                fig.add_trace(
-                    go.Scatter(
-                        x=wave_data.index,
-                        y=wave_data[wave_col],
-                        mode="markers+text",
-                        marker=dict(size=12, color=color, symbol="circle"),
-                        text=[wave_name.split()[-1]] * len(wave_data),
-                        textposition="middle left",
-                        textfont=dict(size=11, color=color, family="monospace"),
-                        name=wave_name,
-                        hovertext=[f"{wave_name} pivot" for _ in wave_data.index],
-                        hoverinfo="x+text+y",
-                    ),
-                    row=1,
-                    col=1,
-                )
-
-        # Fibonacci Projections
-        wave2_proj = df[df["wave_2_proj"].notna()]
-        if not wave2_proj.empty:
-            fig.add_trace(
-                go.Scatter(
-                    x=wave2_proj.index,
-                    y=wave2_proj["wave_2_proj"],
-                    mode="markers",
-                    name="Wave 2 Target",
-                    marker=dict(color="#1d4ed8", size=6, symbol="diamond"),
-                    hovertext=["Wave 2 Fibonacci target" for _ in wave2_proj.index],
-                    hoverinfo="x+y",
-                ),
-                row=1,
-                col=1,
-            )
-
-        wave3_proj = df[df["wave_3_proj"].notna()]
-        if not wave3_proj.empty:
-            fig.add_trace(
-                go.Scatter(
-                    x=wave3_proj.index,
-                    y=wave3_proj["wave_3_proj"],
-                    mode="markers",
-                    name="Wave 3 Target",
-                    marker=dict(color="#3b82f6", size=6, symbol="diamond"),
-                    hovertext=["Wave 3 Fibonacci target" for _ in wave3_proj.index],
-                    hoverinfo="x+y",
-                ),
-                row=1,
-                col=1,
-            )
-
-        wave4_proj = df[df["wave_4_proj"].notna()]
-        if not wave4_proj.empty:
-            fig.add_trace(
-                go.Scatter(
-                    x=wave4_proj.index,
-                    y=wave4_proj["wave_4_proj"],
-                    mode="markers",
-                    name="Wave 4 Target",
-                    marker=dict(color="#2563eb", size=6, symbol="diamond"),
-                    hovertext=["Wave 4 Fibonacci target" for _ in wave4_proj.index],
-                    hoverinfo="x+y",
-                ),
-                row=1,
-                col=1,
-            )
-
-        wave5_proj = df[df["wave_5_proj"].notna()]
-        if not wave5_proj.empty:
-            fig.add_trace(
-                go.Scatter(
-                    x=wave5_proj.index,
-                    y=wave5_proj["wave_5_proj"],
-                    mode="markers",
-                    name="Wave 5 Target",
-                    marker=dict(color="#3b82f6", size=6, symbol="diamond"),
-                    hovertext=["Wave 5 Fibonacci target" for _ in wave5_proj.index],
-                    hoverinfo="x+y",
-                ),
-                row=1,
-                col=1,
-            )
-
-        wavec_proj = df[df["wave_c_proj"].notna()]
-        if not wavec_proj.empty:
-            fig.add_trace(
-                go.Scatter(
-                    x=wavec_proj.index,
-                    y=wavec_proj["wave_c_proj"],
-                    mode="markers",
-                    name="Wave C Target",
-                    marker=dict(color="#ef4444", size=6, symbol="diamond"),
-                    hovertext=["Wave C Fibonacci target" for _ in wavec_proj.index],
-                    hoverinfo="x+y",
-                ),
-                row=1,
-                col=1,
-            )
-
     # Volume bars
     fig.add_trace(
         go.Bar(
@@ -531,8 +403,6 @@ def build_figure(
     indicators_shown = []
     if show_td_sequential:
         indicators_shown.append("TD Sequential")
-    if show_td_wave:
-        indicators_shown.append("TD D-Wave")
     indicators_text = " + ".join(indicators_shown) if indicators_shown else "DeMark"
 
     fig.update_layout(
