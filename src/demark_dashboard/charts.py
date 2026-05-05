@@ -243,6 +243,44 @@ def build_figure(
                 col=1,
             )
 
+        buy_9139 = df[df.get("buy_9_13_9", df.get("buy_9139", False))]
+        if not buy_9139.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=buy_9139.index,
+                    y=buy_9139["Low"] * 0.945,
+                    mode="markers+text",
+                    marker=dict(color="#1d4ed8", size=11, symbol="star"),
+                    text=["9-13-9"] * len(buy_9139),
+                    textposition="bottom center",
+                    textfont=dict(size=10, color="#1d4ed8", family="Courier New, monospace"),
+                    name="Buy 9-13-9",
+                    hovertext=["Qualified Buy 9-13-9 signal" for _ in buy_9139.index],
+                    hoverinfo="x+text",
+                ),
+                row=1,
+                col=1,
+            )
+
+        sell_9139 = df[df.get("sell_9_13_9", df.get("sell_9139", False))]
+        if not sell_9139.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=sell_9139.index,
+                    y=sell_9139["High"] * 1.055,
+                    mode="markers+text",
+                    marker=dict(color="#991b1b", size=11, symbol="star"),
+                    text=["9-13-9"] * len(sell_9139),
+                    textposition="top center",
+                    textfont=dict(size=10, color="#991b1b", family="Courier New, monospace"),
+                    name="Sell 9-13-9",
+                    hovertext=["Qualified Sell 9-13-9 signal" for _ in sell_9139.index],
+                    hoverinfo="x+text",
+                ),
+                row=1,
+                col=1,
+            )
+
         # Deferred Buy (13+)
         deferred_buy = df[df["deferred_buy"]]
         if not deferred_buy.empty:
