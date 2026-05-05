@@ -11,21 +11,6 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
     latest = df.iloc[-1]
     lines: list[str] = []
 
-    def _last_nonzero_event(series: pd.Series) -> tuple[int, pd.Timestamp | None, int | None]:
-        s = pd.to_numeric(series, errors="coerce").fillna(0)
-        nz = s[s > 0]
-        if nz.empty:
-            return 0, None, None
-        idx = nz.index[-1]
-        val = int(nz.iloc[-1])
-        pos = s.index.get_loc(idx)
-        if isinstance(pos, slice):
-            pos = pos.stop - 1
-        elif isinstance(pos, (list, tuple)):
-            pos = int(pos[-1])
-        bars_ago = len(s) - 1 - int(pos)
-        return val, idx, bars_ago
-
     def _fmt_idx(idx: pd.Timestamp | None) -> str:
         if idx is None:
             return "n/a"
@@ -47,71 +32,81 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
     recycled_sell = bool(latest.get("recycled_sell", False))
     tdst_buy = latest.get("tdst_buy")
     tdst_sell = latest.get("tdst_sell")
-    latest_buy_cd_print, latest_buy_cd_date, latest_buy_cd_bars_ago = _last_nonzero_event(df["buy_countdown"])
-    latest_sell_cd_print, latest_sell_cd_date, latest_sell_cd_bars_ago = _last_nonzero_event(df["sell_countdown"])
 
-    # Build concise market commentary
-    commentary_parts = []
-    
-    # Setup status
-    if buy_setup == 9:
-        commentary_parts.append("buy setup complete (9)")
-    elif buy_setup > 0:
-        perf = "perfected" if buy_perfected else f"{buy_setup}/9"
-        commentary_parts.append(f"buy setup {perf}")
-    
-    if sell_setup == 9:
-        commentary_parts.append("sell setup complete (9)")
-    elif sell_setup > 0:
-        perf = "perfected" if sell_perfected else f"{sell_setup}/9"
-        commentary_parts.append(f"sell setup {perf}")
-    
-    # Countdown status
-    has_buy_cd = latest_buy_cd_print > 0 or deferred_buy
-    has_sell_cd = latest_sell_cd_print > 0 or deferred_sell
-    
-    if has_buy_cd:
+    # Determine which direction is currently ACTIVE (only one can be)
+    has_buy_cd = (buy_countdown > 0) or deferred_buy
+    has_sell_cd = (sell_countdown > 0) or deferred_sell
+
+    # Setup commentary with trend context
+    setup_text = ""
+    if buy_setup > 0 and sell_setup == 0:
+        if buy_setup >= 7:
+            setup_text = f"Downside momentum is maturing ({buy_setup}/9 buy setup)"
+            if buy_perfected:
+                setup_text += "; perfection confirms strong selling discipline."
+        else:
+            setup_text = f"Early downside sequence ({buy_setup}/9)"
+    elif sell_setup > 0 and buy_setup == 0:
+        if sell_setup >= 7:
+            setup_text = f"Upside momentum is maturing ({sell_setup}/9 sell setup)"
+            if sell_perfected:
+                setup_text += "; perfection confirms strong buying discipline."
+        else:
+            setup_text = f"Early upside sequence ({sell_setup}/9)"
+    elif buy_setup > 0 and sell_setup > 0:
+        setup_text = f"Conflicted structure: buy setup {buy_setup}/9 vs sell setup {sell_setup}/9"
+    else:
+        setup_text = "No active setup; awaiting price flip for sequence initiation."
+
+    # Countdown commentary (only show ACTIVE direction)
+    countdown_text = ""
+    if has_buy_cd and not has_sell_cd:
         if deferred_buy:
-            commentary_parts.append("buy countdown deferred (12+)")
+            countdown_text = f"Buy countdown in deferred state (12+). Low must penetrate Close[8] to complete."
         else:
-            if latest_buy_cd_print == 13:
-                commentary_parts.append("buy countdown complete (13)")
+            if buy_countdown == 13:
+                countdown_text = f"Buy countdown complete (13): downside exhaustion signal. Market is at critical inflection."
+            elif buy_countdown >= 10:
+                countdown_text = f"Buy countdown {buy_countdown}/13: late-stage exhaustion zone. Reversal risk is elevated."
             else:
-                commentary_parts.append(f"buy countdown {latest_buy_cd_print}/13")
+                countdown_text = f"Buy countdown {buy_countdown}/13: downside momentum persisting."
             if recycled_buy:
-                commentary_parts.append("buy recycled (R)")
-    
-    if has_sell_cd:
+                countdown_text += " [Recycled]"
+    elif has_sell_cd and not has_buy_cd:
         if deferred_sell:
-            commentary_parts.append("sell countdown deferred (12+)")
+            countdown_text = f"Sell countdown in deferred state (12+). High must penetrate Close[8] to complete."
         else:
-            if latest_sell_cd_print == 13:
-                commentary_parts.append("sell countdown complete (13)")
+            if sell_countdown == 13:
+                countdown_text = f"Sell countdown complete (13): upside exhaustion signal. Market is at critical inflection."
+            elif sell_countdown >= 10:
+                countdown_text = f"Sell countdown {sell_countdown}/13: late-stage exhaustion zone. Consolidation or reversal risk is elevated."
             else:
-                commentary_parts.append(f"sell countdown {latest_sell_cd_print}/13")
+                countdown_text = f"Sell countdown {sell_countdown}/13: upside momentum persisting."
             if recycled_sell:
-                commentary_parts.append("sell recycled (R)")
-    
-    # TDST positioning
-    tdst_context = ""
+                countdown_text += " [Recycled]"
+    elif not has_buy_cd and not has_sell_cd:
+        countdown_text = "No active countdown. Waiting for setup 9 to initiate next sequence."
+    # Note: has_buy_cd and has_sell_cd cannot both be true simultaneously (mutual exclusivity rule)
+
+    # TDST context
+    tdst_text = ""
     if pd.notna(tdst_buy) and pd.notna(tdst_sell):
         tdst_buy_float = float(tdst_buy)
         tdst_sell_float = float(tdst_sell)
         if close > tdst_sell_float:
-            tdst_context = "price above both TDST levels"
+            tdst_text = "Price is above both TDST levels; structural strength is present."
         elif close < tdst_buy_float:
-            tdst_context = "price below both TDST levels"
+            tdst_text = "Price is below both TDST levels; structural weakness is present."
         else:
-            tdst_context = "price between TDST levels"
-    
-    # Assemble final commentary
-    if commentary_parts:
-        lines.append(f"{symbol} shows: {', '.join(commentary_parts)}.")
-        if tdst_context:
-            lines.append(f"Structure: {tdst_context}.")
-    elif tdst_context:
-        lines.append(f"{symbol}: {tdst_context}.")
-    else:
-        lines.append(f"{symbol}: Awaiting setup or countdown initiation.")
-    
+            tdst_text = "Price is between TDST levels; structure is transitional."
+
+    # Build final output
+    lines.append(f"**{symbol}** — {setup_text}")
+    lines.append("")
+    if countdown_text:
+        lines.append(countdown_text)
+        lines.append("")
+    if tdst_text:
+        lines.append(tdst_text)
+
     return "\n".join(lines)
