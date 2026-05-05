@@ -125,23 +125,23 @@ def _countdowns(
     sell_setup: pd.Series,
 ) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]:
     """
-    TD Countdown: 13 bars comparing close to low/high 2 bars earlier.
-    Buy Countdown: 13 closes <= low[2 bars ago]
-    Sell Countdown: 13 closes >= high[2 bars ago]
-    MUTUAL EXCLUSIVITY: Only one active countdown direction at a time.
-    When opposite-direction Setup 9 completes, it cancels the prior countdown.
+        TD Countdown: 13 bars comparing close to low/high 2 bars earlier.
+        Buy Countdown: 13 closes <= low[2 bars ago]
+        Sell Countdown: 13 closes >= high[2 bars ago]
 
-    Deferred (13+): bar 13 condition (close <= low[2]) is met but low[13] > close[8].
-      Per book, countdown remains ACTIVE in awaiting state until a bar satisfies BOTH:
-        low <= close[8]  AND  close <= low[2]   (buy)
-        high >= close[8] AND  close >= high[2]  (sell)
+        This implementation supports concurrent hidden countdowns per direction.
+        Multiple countdown candidates can run in the background, but only the
+        countdown closest to completion is displayed on the chart for that bar.
 
-    Returns:
-      buy_countdown, sell_countdown,
-      deferred_buy (+), deferred_sell (+),
-      recycled_buy (R), recycled_sell (R),
-      buy_countdown_active, sell_countdown_active,   <- True on every bar countdown is running
-      buy_deferred_active, sell_deferred_active      <- True on every bar in deferred/awaiting state
+        Deferred (13+): bar 13 close condition is met but bar-13 extreme vs close[8]
+        fails. Countdown remains in awaiting state until both conditions are met.
+
+        Returns:
+            buy_countdown, sell_countdown,
+            deferred_buy (+), deferred_sell (+),
+            recycled_buy (R), recycled_sell (R),
+            buy_countdown_active, sell_countdown_active,
+            buy_deferred_active, sell_deferred_active
     """
     close = df["Close"]
     low = df["Low"]
@@ -158,145 +158,125 @@ def _countdowns(
     buy_deferred_active = pd.Series(False, index=df.index)
     sell_deferred_active = pd.Series(False, index=df.index)
 
-    active_buy = False
-    active_sell = False
-    bcount = 0
-    scount = 0
-    buy_cd8_close = np.nan   # Book rule: save CLOSE of bar 8, not Low
-    sell_cd8_close = np.nan  # Book rule: save CLOSE of bar 8, not High
-    buy_awaiting_13 = False  # True after deferred 13: countdown persists looking for qualifying bar 13
-    sell_awaiting_13 = False
+    buy_trackers: list[dict] = []
+    sell_trackers: list[dict] = []
+
+    def _progress_score(tracker: dict) -> float:
+        if tracker["done"]:
+            return 13.0
+        if tracker["awaiting_13"]:
+            return 12.5
+        return float(tracker["count"])
+
+    def _update_buy_tracker(tracker: dict, i: int) -> tuple[int | None, bool]:
+        printed_value: int | None = None
+        deferred_event = False
+
+        if tracker["done"]:
+            return printed_value, deferred_event
+
+        if tracker["awaiting_13"]:
+            if close.iloc[i] <= low.iloc[i - 2]:
+                if low.iloc[i] <= tracker["cd8_close"]:
+                    tracker["done"] = True
+                    printed_value = 13
+                else:
+                    deferred_event = True
+            return printed_value, deferred_event
+
+        if close.iloc[i] <= low.iloc[i - 2]:
+            tracker["count"] += 1
+            printed_value = tracker["count"]
+            if tracker["count"] == 8:
+                tracker["cd8_close"] = float(close.iloc[i])
+            elif tracker["count"] == 13:
+                if low.iloc[i] <= tracker["cd8_close"]:
+                    tracker["done"] = True
+                    printed_value = 13
+                else:
+                    tracker["count"] = 12
+                    tracker["awaiting_13"] = True
+                    printed_value = None
+                    deferred_event = True
+
+        return printed_value, deferred_event
+
+    def _update_sell_tracker(tracker: dict, i: int) -> tuple[int | None, bool]:
+        printed_value: int | None = None
+        deferred_event = False
+
+        if tracker["done"]:
+            return printed_value, deferred_event
+
+        if tracker["awaiting_13"]:
+            if close.iloc[i] >= high.iloc[i - 2]:
+                if high.iloc[i] >= tracker["cd8_close"]:
+                    tracker["done"] = True
+                    printed_value = 13
+                else:
+                    deferred_event = True
+            return printed_value, deferred_event
+
+        if close.iloc[i] >= high.iloc[i - 2]:
+            tracker["count"] += 1
+            printed_value = tracker["count"]
+            if tracker["count"] == 8:
+                tracker["cd8_close"] = float(close.iloc[i])
+            elif tracker["count"] == 13:
+                if high.iloc[i] >= tracker["cd8_close"]:
+                    tracker["done"] = True
+                    printed_value = 13
+                else:
+                    tracker["count"] = 12
+                    tracker["awaiting_13"] = True
+                    printed_value = None
+                    deferred_event = True
+
+        return printed_value, deferred_event
 
     for i in range(len(df)):
         if i < 2:
             continue
 
-        # ------------------------------------------------------------------
-        # MUTUAL EXCLUSIVITY: Opposite Setup 9 immediately cancels prior countdown
-        # Checked BEFORE recycle so cancellation takes priority
-        # ------------------------------------------------------------------
-        if buy_setup.iloc[i] == 9 and active_sell:
-            active_sell = False
-            active_buy = True
-            bcount = 0
-            scount = 0
-            buy_cd8_close = np.nan
-            sell_cd8_close = np.nan
-            buy_awaiting_13 = False
-            sell_awaiting_13 = False
+        # Start a new background tracker on every Setup 9.
+        if buy_setup.iloc[i] == 9:
+            buy_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
+        if sell_setup.iloc[i] == 9:
+            sell_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
 
-        if sell_setup.iloc[i] == 9 and active_buy:
-            active_buy = False
-            active_sell = True
-            scount = 0
-            bcount = 0
-            sell_cd8_close = np.nan
-            buy_cd8_close = np.nan
-            buy_awaiting_13 = False
-            sell_awaiting_13 = False
+        buy_events: list[tuple[int | None, bool]] = []
+        for tracker in buy_trackers:
+            buy_events.append(_update_buy_tracker(tracker, i))
 
-        # ------------------------------------------------------------------
-        # RECYCLE: Same-direction Setup 9 before bar 13 completion resets count
-        # This includes the awaiting/deferred state (bcount=12, awaiting_13=True)
-        # ------------------------------------------------------------------
-        if active_buy and 0 < bcount <= 12 and buy_setup.iloc[i] == 9:
-            recycled_buy.iloc[i] = True
-            bcount = 0
-            buy_cd8_close = np.nan
-            buy_awaiting_13 = False
+        sell_events: list[tuple[int | None, bool]] = []
+        for tracker in sell_trackers:
+            sell_events.append(_update_sell_tracker(tracker, i))
 
-        if active_sell and 0 < scount <= 12 and sell_setup.iloc[i] == 9:
-            recycled_sell.iloc[i] = True
-            scount = 0
-            sell_cd8_close = np.nan
-            sell_awaiting_13 = False
+        # Display only the tracker closest to completion for each direction.
+        if buy_trackers:
+            buy_best_idx = max(range(len(buy_trackers)), key=lambda k: _progress_score(buy_trackers[k]))
+            buy_print, buy_deferred = buy_events[buy_best_idx]
+            if buy_print is not None:
+                buy_countdown.iloc[i] = int(buy_print)
+            if buy_deferred:
+                deferred_buy.iloc[i] = True
+            buy_deferred_active.iloc[i] = bool(buy_trackers[buy_best_idx]["awaiting_13"])
 
-        # ------------------------------------------------------------------
-        # INITIATE: Start countdown when Setup 9 completes and not already active
-        # ------------------------------------------------------------------
-        if buy_setup.iloc[i] == 9 and not active_buy:
-            active_buy = True
-            bcount = 0
-            buy_cd8_close = np.nan
+        if sell_trackers:
+            sell_best_idx = max(range(len(sell_trackers)), key=lambda k: _progress_score(sell_trackers[k]))
+            sell_print, sell_deferred = sell_events[sell_best_idx]
+            if sell_print is not None:
+                sell_countdown.iloc[i] = int(sell_print)
+            if sell_deferred:
+                deferred_sell.iloc[i] = True
+            sell_deferred_active.iloc[i] = bool(sell_trackers[sell_best_idx]["awaiting_13"])
 
-        if sell_setup.iloc[i] == 9 and not active_sell:
-            active_sell = True
-            scount = 0
-            sell_cd8_close = np.nan
+        buy_countdown_active.iloc[i] = any(not t["done"] for t in buy_trackers)
+        sell_countdown_active.iloc[i] = any(not t["done"] for t in sell_trackers)
 
-        # ------------------------------------------------------------------
-        # BUY COUNTDOWN (only when active and sell not active)
-        # ------------------------------------------------------------------
-        if active_buy and not active_sell:
-            if buy_awaiting_13:
-                # Deferred/awaiting state: countdown reached bar 13 (close <= low[2]) but
-                # low[13] > close[8] failed. Now wait for BOTH conditions simultaneously.
-                if close.iloc[i] <= low.iloc[i - 2]:
-                    if low.iloc[i] <= buy_cd8_close:
-                        # Both conditions now satisfied: countdown 13 complete
-                        buy_countdown.iloc[i] = 13
-                        active_buy = False
-                        buy_awaiting_13 = False
-                    else:
-                        # Close condition met but low still > close[8]: mark deferred again
-                        deferred_buy.iloc[i] = True
-                # else: close > low[2], neither condition met — continue waiting silently
-            else:
-                # Normal countdown: count bars where close <= low[2 bars ago]
-                if close.iloc[i] <= low.iloc[i - 2]:
-                    bcount += 1
-                    buy_countdown.iloc[i] = bcount
-                    if bcount == 8:
-                        buy_cd8_close = close.iloc[i]  # Book rule: save Close[8]
-                    elif bcount == 13:
-                        if low.iloc[i] <= buy_cd8_close:
-                            # Both conditions met: complete and stop countdown
-                            active_buy = False
-                        else:
-                            # Close condition met but low[13] > close[8]: enter deferred state
-                            buy_countdown.iloc[i] = 0  # Clear — not a completed 13
-                            deferred_buy.iloc[i] = True
-                            bcount = 12        # Hold at 12 (awaiting bar 13 completion)
-                            buy_awaiting_13 = True  # Countdown continues in awaiting state
-                # else: close > low[2] — countdown pauses on this bar (no action, preserves bcount)
-                # Note: bcount == 0 pause is intentional — countdown waits for first qualifying bar
-
-        # ------------------------------------------------------------------
-        # SELL COUNTDOWN (only when active and buy not active)
-        # ------------------------------------------------------------------
-        if active_sell and not active_buy:
-            if sell_awaiting_13:
-                if close.iloc[i] >= high.iloc[i - 2]:
-                    if high.iloc[i] >= sell_cd8_close:
-                        # Both conditions satisfied: countdown 13 complete
-                        sell_countdown.iloc[i] = 13
-                        active_sell = False
-                        sell_awaiting_13 = False
-                    else:
-                        deferred_sell.iloc[i] = True
-            else:
-                if close.iloc[i] >= high.iloc[i - 2]:
-                    scount += 1
-                    sell_countdown.iloc[i] = scount
-                    if scount == 8:
-                        sell_cd8_close = close.iloc[i]  # Book rule: save Close[8]
-                    elif scount == 13:
-                        if high.iloc[i] >= sell_cd8_close:
-                            # Both conditions met: complete and stop countdown
-                            active_sell = False
-                        else:
-                            sell_countdown.iloc[i] = 0  # Clear — not a completed 13
-                            deferred_sell.iloc[i] = True
-                            scount = 12
-                            sell_awaiting_13 = True
-
-        # ------------------------------------------------------------------
-        # Record active/deferred state AFTER processing (end-of-bar state)
-        # ------------------------------------------------------------------
-        buy_countdown_active.iloc[i] = active_buy
-        sell_countdown_active.iloc[i] = active_sell
-        buy_deferred_active.iloc[i] = buy_awaiting_13
-        sell_deferred_active.iloc[i] = sell_awaiting_13
+        # Keep completed trackers only for the completion bar, then remove.
+        buy_trackers = [t for t in buy_trackers if not t["done"]]
+        sell_trackers = [t for t in sell_trackers if not t["done"]]
 
     return (
         buy_countdown, sell_countdown,
@@ -723,29 +703,21 @@ def apply_demark(df: pd.DataFrame) -> pd.DataFrame:
     # True range for risk calculations
     out["true_range"] = _true_range(out)
 
-    # TD D-Wave analysis
-    (
-        wave_1, wave_2, wave_3, wave_4, wave_5,
-        wave_a, wave_b, wave_c,
-        wave_2_proj,
-        wave_3_proj,
-        wave_4_proj,
-        wave_5_proj, wave_c_proj,
-        wave_state
-    ) = _waves(out)
-    out["wave_1"] = wave_1
-    out["wave_2"] = wave_2
-    out["wave_3"] = wave_3
-    out["wave_4"] = wave_4
-    out["wave_5"] = wave_5
-    out["wave_a"] = wave_a
-    out["wave_b"] = wave_b
-    out["wave_c"] = wave_c
-    out["wave_2_proj"] = wave_2_proj
-    out["wave_3_proj"] = wave_3_proj
-    out["wave_4_proj"] = wave_4_proj
-    out["wave_5_proj"] = wave_5_proj
-    out["wave_c_proj"] = wave_c_proj
-    out["wave_state"] = wave_state
+    # TD D-Wave is disabled for now pending full accuracy validation.
+    # Keep columns present as placeholders to preserve downstream compatibility.
+    out["wave_1"] = np.nan
+    out["wave_2"] = np.nan
+    out["wave_3"] = np.nan
+    out["wave_4"] = np.nan
+    out["wave_5"] = np.nan
+    out["wave_a"] = np.nan
+    out["wave_b"] = np.nan
+    out["wave_c"] = np.nan
+    out["wave_2_proj"] = np.nan
+    out["wave_3_proj"] = np.nan
+    out["wave_4_proj"] = np.nan
+    out["wave_5_proj"] = np.nan
+    out["wave_c_proj"] = np.nan
+    out["wave_state"] = ""
 
     return out
