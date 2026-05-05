@@ -50,6 +50,12 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
     deferred_sell_today = bool(latest.get("deferred_sell", False))
     recycled_buy = bool(latest.get("recycled_buy", False))
     recycled_sell = bool(latest.get("recycled_sell", False))
+    buy_cq1 = bool(latest.get("buy_cq1", latest.get("buy_cancel_qualifier_i", False)))
+    sell_cq1 = bool(latest.get("sell_cq1", latest.get("sell_cancel_qualifier_i", False)))
+    buy_cq2 = bool(latest.get("buy_cq2", latest.get("buy_cancel_qualifier_ii", False)))
+    sell_cq2 = bool(latest.get("sell_cq2", latest.get("sell_cancel_qualifier_ii", False)))
+    buy_9139 = bool(latest.get("buy_9_13_9", latest.get("buy_9139", False)))
+    sell_9139 = bool(latest.get("sell_9_13_9", latest.get("sell_9139", False)))
 
     # Last printed countdown bar (may be several bars ago — countdowns are non-continuous)
     last_buy_cd, buy_cd_bars_ago = _last_nonzero(df["buy_countdown"])
@@ -141,7 +147,11 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
             countdown_text = "Buy countdown initiated. Waiting for first qualifying bar (Close ≤ Low[2])."
 
         if recycled_buy:
-            countdown_text += " [Recycled: same-direction Setup 9 restarted count from bar 1]"
+            countdown_text += " [Recycled: same-direction buy setup extended to 18 bars, negating the developing countdown]"
+        if buy_cq1:
+            countdown_text += " [Cancellation Qualifier I: a newer buy setup range displaced the earlier active setup]"
+        if buy_cq2:
+            countdown_text += " [Cancellation Qualifier II: the newer buy setup remained inside the prior buy setup, so the earlier countdown stayed active]"
         if sell_setup > 0 and sell_setup < 9:
             countdown_text += f" Note: sell setup {sell_setup}/9 forming — if it reaches 9, this countdown is cancelled."
 
@@ -175,12 +185,21 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
             countdown_text = "Sell countdown initiated. Waiting for first qualifying bar (Close ≥ High[2])."
 
         if recycled_sell:
-            countdown_text += " [Recycled: same-direction Setup 9 restarted count from bar 1]"
+            countdown_text += " [Recycled: same-direction sell setup extended to 18 bars, negating the developing countdown]"
+        if sell_cq1:
+            countdown_text += " [Cancellation Qualifier I: a newer sell setup range displaced the earlier active setup]"
+        if sell_cq2:
+            countdown_text += " [Cancellation Qualifier II: the newer sell setup remained inside the prior sell setup, so the earlier countdown stayed active]"
         if buy_setup > 0 and buy_setup < 9:
             countdown_text += f" Note: buy setup {buy_setup}/9 forming — if it reaches 9, this countdown is cancelled."
 
     else:
         countdown_text = "No active countdown. Awaiting Setup 9 completion to initiate exhaustion count."
+
+    if buy_9139:
+        lines.append("Qualified TD Sequential 9-13-9 buy signal is active: the prior buy 13 was followed by a bullish price flip and then a fresh buy setup without an intervening sell setup.")
+    if sell_9139:
+        lines.append("Qualified TD Sequential 9-13-9 sell signal is active: the prior sell 13 was followed by a bearish price flip and then a fresh sell setup without an intervening buy setup.")
 
     # =========================================================================
     # TDST STRUCTURAL CONTEXT
