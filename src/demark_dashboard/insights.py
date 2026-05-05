@@ -58,26 +58,49 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
     setup_text = ""
     if buy_setup > 0 and sell_setup == 0:
         if buy_setup == 9:
-            setup_text = f"Buy setup complete (9). Downside exhaustion structure is formed."
-        elif buy_setup >= 7:
-            setup_text = f"Buy setup {buy_setup}/9 — downside momentum is mature and approaching exhaustion."
+            setup_text = (
+                f"Buy setup 9 complete. Nine consecutive bars where Close < Close[4]. "
+                f"Downside momentum structure formed."
+            )
             if buy_perfected:
-                setup_text += " Perfection confirms strong selling discipline."
+                setup_text += " Perfected: Low[8-9] ≤ min(Low[6-7])."
+        elif buy_setup >= 7:
+            setup_text = (
+                f"Buy setup {buy_setup}/9. Counting consecutive bars where Close < Close[4]. "
+                f"Downside momentum maturing."
+            )
+            if buy_perfected:
+                setup_text += " Perfected."
         else:
-            setup_text = f"Buy setup {buy_setup}/9 — downside sequence forming."
+            setup_text = (
+                f"Buy setup {buy_setup}/9. Counting consecutive bars where Close < Close[4]."
+            )
     elif sell_setup > 0 and buy_setup == 0:
         if sell_setup == 9:
-            setup_text = f"Sell setup complete (9). Upside exhaustion structure is formed."
-        elif sell_setup >= 7:
-            setup_text = f"Sell setup {sell_setup}/9 — upside momentum is mature and approaching exhaustion."
+            setup_text = (
+                f"Sell setup 9 complete. Nine consecutive bars where Close > Close[4]. "
+                f"Upside momentum structure formed."
+            )
             if sell_perfected:
-                setup_text += " Perfection confirms strong buying discipline."
+                setup_text += " Perfected: High[8-9] ≥ max(High[6-7])."
+        elif sell_setup >= 7:
+            setup_text = (
+                f"Sell setup {sell_setup}/9. Counting consecutive bars where Close > Close[4]. "
+                f"Upside momentum maturing."
+            )
+            if sell_perfected:
+                setup_text += " Perfected."
         else:
-            setup_text = f"Sell setup {sell_setup}/9 — upside sequence forming."
+            setup_text = (
+                f"Sell setup {sell_setup}/9. Counting consecutive bars where Close > Close[4]."
+            )
     elif buy_setup > 0 and sell_setup > 0:
-        setup_text = f"Conflicted structure: buy {buy_setup}/9 vs sell {sell_setup}/9."
+        setup_text = (
+            f"Conflicted structure: buy setup {buy_setup}/9 vs sell setup {sell_setup}/9. "
+            f"Setup counts interrupted; directional clarity needed."
+        )
     else:
-        setup_text = "No setup in progress. Awaiting price flip to initiate next sequence."
+        setup_text = "No setup in progress. Awaiting price flip (Close crossing Close[4]) to initiate new sequence."
 
     # =========================================================================
     # COUNTDOWN PHASE STATUS (ACTIVE DIRECTION ONLY)
@@ -85,38 +108,66 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
     countdown_text = ""
     
     if has_buy_cd and not has_sell_cd:
-        # Buy countdown is active
+        # Buy countdown is active (Close <= Low[2])
         if deferred_buy:
-            countdown_text = f"Buy countdown deferred (12+). Waiting for low to penetrate Close[8] reference."
+            countdown_text = (
+                f"Buy countdown deferred (12+). "
+                f"Bar 13 was reached but failed condition: Low[13] > Close[8]. "
+                f"Awaiting next qualifying bar with Low ≤ Close[8]."
+            )
         else:
             if last_buy_cd == 13:
-                countdown_text = f"Buy countdown complete (13). Downside exhaustion is confirmed — market at critical reversal point."
+                countdown_text = (
+                    f"Buy countdown 13 COMPLETE. Both conditions satisfied: "
+                    f"Low[13] ≤ Close[8] AND Close[13] ≤ Low[2 bars]. "
+                    f"Downside exhaustion confirmed."
+                )
             elif last_buy_cd >= 10:
-                countdown_text = f"Buy countdown {last_buy_cd}/13 ({buy_cd_bars_ago} bars ago). Late exhaustion zone — downside pressure may reverse soon."
+                countdown_text = (
+                    f"Buy countdown {last_buy_cd}/13 ({buy_cd_bars_ago} bars ago). "
+                    f"Counting bars where Close ≤ Low[2 bars]. Late-stage exhaustion zone."
+                )
             elif last_buy_cd > 0:
-                countdown_text = f"Buy countdown {last_buy_cd}/13 ({buy_cd_bars_ago} bars ago). Downside momentum continues."
+                countdown_text = (
+                    f"Buy countdown {last_buy_cd}/13 ({buy_cd_bars_ago} bars ago). "
+                    f"Counting bars where Close ≤ Low[2 bars]."
+                )
             
             if recycled_buy and countdown_text:
-                countdown_text += " [Recycled — timing extended]"
+                countdown_text += " [Recycled: new Setup 9 restarted count]"
     
     elif has_sell_cd and not has_buy_cd:
-        # Sell countdown is active
+        # Sell countdown is active (Close >= High[2])
         if deferred_sell:
-            countdown_text = f"Sell countdown deferred (12+). Waiting for high to penetrate Close[8] reference."
+            countdown_text = (
+                f"Sell countdown deferred (12+). "
+                f"Bar 13 was reached but failed condition: High[13] < Close[8]. "
+                f"Awaiting next qualifying bar with High ≥ Close[8]."
+            )
         else:
             if last_sell_cd == 13:
-                countdown_text = f"Sell countdown complete (13). Upside exhaustion is confirmed — market at critical reversal point."
+                countdown_text = (
+                    f"Sell countdown 13 COMPLETE. Both conditions satisfied: "
+                    f"High[13] ≥ Close[8] AND Close[13] ≥ High[2 bars]. "
+                    f"Upside exhaustion confirmed."
+                )
             elif last_sell_cd >= 10:
-                countdown_text = f"Sell countdown {last_sell_cd}/13 ({sell_cd_bars_ago} bars ago). Late exhaustion zone — upside extension vulnerable to correction."
+                countdown_text = (
+                    f"Sell countdown {last_sell_cd}/13 ({sell_cd_bars_ago} bars ago). "
+                    f"Counting bars where Close ≥ High[2 bars]. Late-stage exhaustion zone."
+                )
             elif last_sell_cd > 0:
-                countdown_text = f"Sell countdown {last_sell_cd}/13 ({sell_cd_bars_ago} bars ago). Upside momentum continues."
+                countdown_text = (
+                    f"Sell countdown {last_sell_cd}/13 ({sell_cd_bars_ago} bars ago). "
+                    f"Counting bars where Close ≥ High[2 bars]."
+                )
             
             if recycled_sell and countdown_text:
-                countdown_text += " [Recycled — timing extended]"
+                countdown_text += " [Recycled: new Setup 9 restarted count]"
     
     else:
         # No active countdown
-        countdown_text = "No active countdown. Transition phase — awaiting setup 9 to launch next exhaust sequence."
+        countdown_text = "No active countdown. Awaiting Setup 9 completion to initiate exhaust count."
 
     # =========================================================================
     # TDST STRUCTURAL CONTEXT
@@ -148,27 +199,41 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
     trend_strength = ""
     
     if has_buy_cd and buy_setup == 0:
-        if last_buy_cd >= 10:
-            trend_strength = "Strong downtrend exhaustion — reversal risk elevated."
+        # Buy countdown active, setup complete
+        if last_buy_cd >= 13:
+            trend_strength = "Downside exhaustion confirmed. Bars counting where Close ≤ Low[2]. Reversal risk present."
+        elif last_buy_cd >= 10:
+            trend_strength = "Downside exhaustion in late stage. Bars counting where Close ≤ Low[2]. Reversal risk elevated."
         elif last_buy_cd >= 7:
-            trend_strength = "Downtrend showing fatigue in late-stage countdown."
+            trend_strength = "Downside exhaustion mid-stage. Bars counting where Close ≤ Low[2]."
         else:
-            trend_strength = "Downtrend momentum remains intact; countdown still early."
+            trend_strength = "Downside exhaustion counting started. Bars counting where Close ≤ Low[2]."
     elif has_sell_cd and sell_setup == 0:
-        if last_sell_cd >= 10:
-            trend_strength = "Strong uptrend exhaustion — pullback risk elevated."
+        # Sell countdown active, setup complete
+        if last_sell_cd >= 13:
+            trend_strength = "Upside exhaustion confirmed. Bars counting where Close ≥ High[2]. Reversal risk present."
+        elif last_sell_cd >= 10:
+            trend_strength = "Upside exhaustion in late stage. Bars counting where Close ≥ High[2]. Reversal risk elevated."
         elif last_sell_cd >= 7:
-            trend_strength = "Uptrend showing fatigue in late-stage countdown."
+            trend_strength = "Upside exhaustion mid-stage. Bars counting where Close ≥ High[2]."
         else:
-            trend_strength = "Uptrend momentum remains intact; countdown still early."
+            trend_strength = "Upside exhaustion counting started. Bars counting where Close ≥ High[2]."
     elif buy_setup > 0 and not has_buy_cd:
-        trend_strength = f"Downside structure forming ({buy_setup}/9). Awaiting countdown initiation."
+        # Buy setup active but countdown not yet initiated
+        if buy_setup == 9:
+            trend_strength = "Buy setup 9 complete. Countdown will initiate when first qualifying bar appears (Close ≤ Low[2])."
+        else:
+            trend_strength = f"Buy setup {buy_setup}/9 forming. Awaiting setup 9 to activate exhaustion count."
     elif sell_setup > 0 and not has_sell_cd:
-        trend_strength = f"Upside structure forming ({sell_setup}/9). Awaiting countdown initiation."
+        # Sell setup active but countdown not yet initiated
+        if sell_setup == 9:
+            trend_strength = "Sell setup 9 complete. Countdown will initiate when first qualifying bar appears (Close ≥ High[2])."
+        else:
+            trend_strength = f"Sell setup {sell_setup}/9 forming. Awaiting setup 9 to activate exhaustion count."
     elif buy_setup > 0 and sell_setup > 0:
-        trend_strength = "Market in conflicted state — directional bias unclear."
+        trend_strength = "Conflicted structure. Both setups present — directional exhaustion bias unclear."
     else:
-        trend_strength = "Awaiting sequential structure."
+        trend_strength = "No setup or countdown active. Awaiting price flip to initiate exhaustion sequence."
 
     # =========================================================================
     # BUILD FINAL OUTPUT
