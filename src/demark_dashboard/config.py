@@ -1,5 +1,0 @@
-EQUITIES = ["SPY", "QQQ", "DIA", "IWM", "AAPL", "MSFT", "NVDA"]
-FX = ["EURUSD=X", "GBPUSD=X", "JPY=X", "AUDUSD=X", "USDCAD=X", "CHF=X"]
-COMMODITIES = ["GC=F", "SI=F", "CL=F", "NG=F", "ZC=F", "ZS=F"]
-INTERVAL_OPTIONS = ["1d", "1h", "30m"]
-PERIOD_OPTIONS = ["6mo", "1y", "2y", "5y"]
