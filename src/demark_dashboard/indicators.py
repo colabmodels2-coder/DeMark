@@ -225,14 +225,6 @@ def _countdowns(
             sell_cd8_close = np.nan
 
         # ------------------------------------------------------------------
-        # Record active state BEFORE processing (so bar 0 before first print is also captured)
-        # ------------------------------------------------------------------
-        buy_countdown_active.iloc[i] = active_buy
-        sell_countdown_active.iloc[i] = active_sell
-        buy_deferred_active.iloc[i] = buy_awaiting_13
-        sell_deferred_active.iloc[i] = sell_awaiting_13
-
-        # ------------------------------------------------------------------
         # BUY COUNTDOWN (only when active and sell not active)
         # ------------------------------------------------------------------
         if active_buy and not active_sell:
@@ -258,8 +250,8 @@ def _countdowns(
                         buy_cd8_close = close.iloc[i]  # Book rule: save Close[8]
                     elif bcount == 13:
                         if low.iloc[i] <= buy_cd8_close:
-                            # Both conditions met: complete
-                            pass  # buy_countdown already set to 13 above
+                            # Both conditions met: complete and stop countdown
+                            active_buy = False
                         else:
                             # Close condition met but low[13] > close[8]: enter deferred state
                             buy_countdown.iloc[i] = 0  # Clear — not a completed 13
@@ -290,12 +282,21 @@ def _countdowns(
                         sell_cd8_close = close.iloc[i]  # Book rule: save Close[8]
                     elif scount == 13:
                         if high.iloc[i] >= sell_cd8_close:
-                            pass  # sell_countdown already set to 13 above
+                            # Both conditions met: complete and stop countdown
+                            active_sell = False
                         else:
                             sell_countdown.iloc[i] = 0  # Clear — not a completed 13
                             deferred_sell.iloc[i] = True
                             scount = 12
                             sell_awaiting_13 = True
+
+        # ------------------------------------------------------------------
+        # Record active/deferred state AFTER processing (end-of-bar state)
+        # ------------------------------------------------------------------
+        buy_countdown_active.iloc[i] = active_buy
+        sell_countdown_active.iloc[i] = active_sell
+        buy_deferred_active.iloc[i] = buy_awaiting_13
+        sell_deferred_active.iloc[i] = sell_awaiting_13
 
     return (
         buy_countdown, sell_countdown,
