@@ -90,6 +90,48 @@ def _import_dashboard_symbols():
 
 st.set_page_config(page_title="DeMark Market Dashboard", layout="wide")
 
+
+# ============================================================================
+# PASSWORD PROTECTION
+# ============================================================================
+def _check_password():
+    """Verify password via session state."""
+    if st.session_state.get("password_correct"):
+        return True
+    return False
+
+
+def _password_entered():
+    """Callback for when user enters password."""
+    if st.session_state["password_input"] == "SHPPF":
+        st.session_state["password_correct"] = True
+        del st.session_state["password_input"]
+    else:
+        st.session_state["password_correct"] = False
+
+
+if not _check_password():
+    st.title("🔒 DeMark Market Dashboard - Access Restricted")
+    st.markdown("### Please enter the password to access this dashboard.")
+    
+    st.text_input(
+        "Password:",
+        type="password",
+        on_change=_password_entered,
+        key="password_input",
+        placeholder="Enter password",
+    )
+    
+    if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+        st.error("❌ Incorrect password. Please try again.")
+    
+    st.stop()
+
+
+# ============================================================================
+# END PASSWORD PROTECTION
+# ============================================================================
+
 st.title("📊 DeMark Market Dashboard")
 st.caption(
     "**TD Sequential by Jason Perl** — Interactive daily market monitor for equities, FX, and commodities. "
