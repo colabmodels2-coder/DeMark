@@ -20,6 +20,8 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
     sell_perfected = bool(latest.get("sell_perfected", False))
     deferred_buy = bool(latest.get("deferred_buy", False))
     deferred_sell = bool(latest.get("deferred_sell", False))
+    recycled_buy = bool(latest.get("recycled_buy", False))
+    recycled_sell = bool(latest.get("recycled_sell", False))
     tdst_buy = latest.get("tdst_buy")
     tdst_sell = latest.get("tdst_sell")
 
@@ -71,6 +73,14 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
                 lines.append(f"   → Potential trend exhaustion / reversal signal. Evaluate short entry conditions.")
                 if pd.notna(tdst_sell):
                     lines.append(f"   → TDST Sell Resistance: {float(tdst_sell):,.2f}")
+
+    if recycled_buy:
+        lines.append("🔁 **Buy Countdown Recycled (R)**")
+        lines.append("   → A new Buy Setup 9 occurred before Buy Countdown 13 completion; countdown restarted.")
+
+    if recycled_sell:
+        lines.append("🔁 **Sell Countdown Recycled (R)**")
+        lines.append("   → A new Sell Setup 9 occurred before Sell Countdown 13 completion; countdown restarted.")
 
     # TDST level analysis
     if pd.notna(tdst_buy):
