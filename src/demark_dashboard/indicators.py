@@ -336,14 +336,16 @@ def _tdst_levels(df: pd.DataFrame, buy_setup: pd.Series, sell_setup: pd.Series) 
 def _waves(df: pd.DataFrame) -> tuple:
     """
     TD D-Wave detection using closing prices as per Jason Perl's methodology.
-    Returns: wave_1, wave_2, wave_3, wave_4, wave_5, wave_a, wave_b, wave_c,
-             wave_3_projection, wave_5_projection, wave_c_projection,
-             wave_state_label (for charting)
+
+    Returns discrete pivot events for waves 1-5 and A-B-C plus projection levels.
+    Wave labels are emitted only on completion bars (no forward-filled markers).
+
+    For downtrend sequences, mirrored rules are applied and pivots are written to
+    the same columns so charting can display the complete structure.
     """
-    close = df["Close"].values
+    close = df["Close"].astype(float).values
     n = len(close)
-    
-    # Initialize output arrays
+
     wave_1 = np.full(n, np.nan)
     wave_2 = np.full(n, np.nan)
     wave_3 = np.full(n, np.nan)
@@ -352,271 +354,314 @@ def _waves(df: pd.DataFrame) -> tuple:
     wave_a = np.full(n, np.nan)
     wave_b = np.full(n, np.nan)
     wave_c = np.full(n, np.nan)
-    
-    # Projection targets
+
+    wave_2_proj = np.full(n, np.nan)
     wave_3_proj = np.full(n, np.nan)
+    wave_4_proj = np.full(n, np.nan)
     wave_5_proj = np.full(n, np.nan)
     wave_c_proj = np.full(n, np.nan)
-    
-    # Wave state tracking
-    wave_state = [""] * n  # "W1", "W2", "W3", etc.
-    
-    # State machine for uptrend sequence
-    state_up = None  # None, "W1_origin", "W1_confirmed", "W1", "W2", "W3", "W4", "W5"
-    state_down = None  # None, "WA", "WB", "WC"
-    
-    # Wave extremes tracking
-    w1_low = np.nan
-    w1_high = np.nan
-    w1_idx = -1
-    w2_low = np.nan
-    w2_high = np.nan
-    w2_idx = -1
-    w3_low = np.nan
-    w3_high = np.nan
-    w3_idx = -1
-    w4_low = np.nan
-    w4_high = np.nan
-    w4_idx = -1
-    w5_low = np.nan
-    w5_high = np.nan
-    w5_idx = -1
-    
-    wa_low = np.nan
-    wa_high = np.nan
-    wa_idx = -1
-    wb_low = np.nan
-    wb_high = np.nan
-    wb_idx = -1
-    wc_low = np.nan
-    wc_high = np.nan
-    wc_idx = -1
-    
-    wc_locked = False  # Wave C completed (close < Wave A low)
-    
-    # Helper: Check if bar i has N-bar-low close
-    def is_n_bar_low(i: int, n: int) -> bool:
-        if i < n - 1:
+    wave_state = [""] * n
+
+    trend = None  # None | "bull" | "bear"
+    state = ""
+
+    # Bull structure tracking
+    bw1_low = np.nan
+    bw1_high = np.nan
+    bw2_low = np.nan
+    bw2_high = np.nan
+    bw3_low = np.nan
+    bw3_high = np.nan
+    bw4_low = np.nan
+    bw4_high = np.nan
+    bw5_low = np.nan
+    bw5_high = np.nan
+    bwa_low = np.nan
+    bwa_high = np.nan
+    bwb_high = np.nan
+    bwc_low = np.nan
+    bw3_start = -1
+    bw5_start = -1
+    bwa_start = -1
+    bwb_start = -1
+
+    # Bear structure tracking (mirrored rules)
+    sw1_high = np.nan
+    sw1_low = np.nan
+    sw2_high = np.nan
+    sw2_low = np.nan
+    sw3_high = np.nan
+    sw3_low = np.nan
+    sw4_high = np.nan
+    sw4_low = np.nan
+    sw5_high = np.nan
+    sw5_low = np.nan
+    swa_high = np.nan
+    swa_low = np.nan
+    swb_low = np.nan
+    swc_high = np.nan
+    sw3_start = -1
+    sw5_start = -1
+    swa_start = -1
+    swb_start = -1
+
+    def reset_cycle() -> None:
+        nonlocal trend, state
+        trend = None
+        state = ""
+
+    def is_n_bar_low(i: int, lookback: int) -> bool:
+        if i < lookback - 1:
             return False
-        return close[i] < np.min(close[i - n + 1 : i])
-    
-    # Helper: Check if bar i has N-bar-high close
-    def is_n_bar_high(i: int, n: int) -> bool:
-        if i < n - 1:
+        return close[i] < np.min(close[i - lookback + 1 : i])
+
+    def is_n_bar_high(i: int, lookback: int) -> bool:
+        if i < lookback - 1:
             return False
-        return close[i] > np.max(close[i - n + 1 : i])
-    
-    # Main state machine loop
+        return close[i] > np.max(close[i - lookback + 1 : i])
+
     for i in range(n):
-        current_close = close[i]
-        
-        # ===== UPTREND SEQUENCE (Waves 1-5) =====
-        
-        if state_up is None:
-            # Looking for Wave 1 origin: 21-bar-low
+        c = close[i]
+
+        if trend is None:
             if is_n_bar_low(i, 21):
-                state_up = "W1_origin"
-                w1_low = current_close
-                w1_idx = i
-        
-        elif state_up == "W1_origin":
-            # Confirm Wave 1: 13-bar-high after origin
-            if is_n_bar_high(i, 13):
-                state_up = "W1_confirmed"
-                w1_high = current_close
-                wave_1[i] = current_close
-                wave_state[i] = "W1"
-            # If price falls to new low before 13-bar-high, reset origin
-            elif current_close < w1_low:
-                w1_low = current_close
-                w1_idx = i
-        
-        elif state_up == "W1_confirmed":
-            # Wave 1 ends with 8-bar-low
-            if is_n_bar_low(i, 8):
-                state_up = "W2"
-                w2_low = current_close
-                w2_idx = i
-                wave_1[i] = w1_high
-            else:
-                wave_1[i] = w1_high
-        
-        elif state_up == "W2":
-            # Wave 2 ends with 21-bar-high (confirms Wave 3 start)
+                trend = "bull"
+                state = "W1_origin"
+                bw1_low = c
+                wave_state[i] = "W1_origin"
+                continue
             if is_n_bar_high(i, 21):
-                # Wave 2 cannot close below Wave 1 low (invalidation rule)
-                if current_close >= w1_low:
-                    state_up = "W3"
-                    w2_high = current_close
-                    w2_idx = i
-                    wave_2[i] = current_close
-                    w3_low = np.inf
-                    
-                    # Calculate Wave 3 projection: Low_W1 + (High_W1 - Low_W1) * 1.618
-                    w1_range = w1_high - w1_low
-                    wave_3_proj[i] = w1_low + w1_range * 1.618
-                else:
-                    # Wave invalidated, restart
-                    state_up = None
-                    state_down = None
-                    wc_locked = False
-            else:
-                # Update Wave 2 low if lower
-                if current_close < w2_low:
-                    w2_low = current_close
-                    w2_idx = i
-                wave_2[i] = w2_high if not np.isnan(w2_high) else w2_low
-        
-        elif state_up == "W3":
-            # Track Wave 3 low
-            if current_close < w3_low:
-                w3_low = current_close
-                w3_idx = i
-            
-            # Wave 3 ends with 13-bar-low (confirms Wave 4 start)
-            if is_n_bar_low(i, 13):
-                state_up = "W4"
-                w3_high = np.max(close[max(0, w2_idx + 1) : i + 1])
-                w4_low = current_close
-                w4_idx = i
-                wave_3[i] = w3_high
-                
-                # Wave 3 peak must be > Wave 1 peak
-                if w3_high > w1_high:
-                    pass  # Valid
-                else:
-                    # Invalid wave structure, reset
-                    state_up = None
-                    state_down = None
-                    wc_locked = False
-            else:
-                wave_3[i] = w3_high if not np.isnan(w3_high) else np.nan
-        
-        elif state_up == "W4":
-            # Track Wave 4 low
-            if current_close < w4_low:
-                w4_low = current_close
-                w4_idx = i
-            
-            # Wave 4 ends with 34-bar-high (confirms Wave 5 start)
-            if is_n_bar_high(i, 34):
-                state_up = "W5"
-                w4_high = current_close
-                w4_idx = i
-                wave_4[i] = current_close
-                w5_low = np.inf
-                
-                # Calculate Wave 5 projection: Low_W3 + (High_W3 - Low_W3) * 1.618
-                w3_range = w3_high - w3_low
-                wave_5_proj[i] = w3_low + w3_range * 1.618
-            else:
-                wave_4[i] = w4_high if not np.isnan(w4_high) else np.nan
-        
-        elif state_up == "W5":
-            # Track Wave 5 low
-            if current_close < w5_low:
-                w5_low = current_close
-                w5_idx = i
-            
-            # Wave 5 ends with 13-bar-low (start of Wave A)
-            if is_n_bar_low(i, 13):
-                w5_high = np.max(close[max(0, w4_idx + 1) : i + 1])
-                wave_5[i] = w5_high
-                
-                # Wave 5 peak must be > Wave 3 peak
-                if w5_high > w3_high:
-                    state_up = "COMPLETE"
-                    state_down = "WA"
-                    wa_low = current_close
-                    wa_idx = i
-                    wc_locked = False
-                else:
-                    # Invalid, reset
-                    state_up = None
-                    state_down = None
-                    wc_locked = False
-            else:
-                wave_5[i] = w5_high if not np.isnan(w5_high) else np.nan
-        
-        # ===== CORRECTIVE SEQUENCE (Waves A-B-C) =====
-        
-        if state_down == "WA":
-            # Track Wave A low
-            if current_close < wa_low:
-                wa_low = current_close
-                wa_idx = i
-            
-            # Wave A ends with 8-bar-high (start of Wave B)
-            if is_n_bar_high(i, 8):
-                wa_high = np.max(close[max(0, w5_idx + 1) : i + 1])
-                wave_a[i] = wa_high
-                state_down = "WB"
-                wb_low = current_close
-                wb_idx = i
-            else:
-                wave_a[i] = wa_high if not np.isnan(wa_high) else np.nan
-        
-        elif state_down == "WB":
-            # Track Wave B high
-            if current_close > wb_low:
-                wb_low = current_close
-                wb_idx = i
-            
-            # Wave B ends with 21-bar-low (start of Wave C)
-            if is_n_bar_low(i, 21):
-                # Wave B cannot close above Wave 5 high (until Wave C locks)
-                if not wc_locked and current_close <= w5_high:
-                    wb_high = np.max(close[max(0, wa_idx + 1) : i + 1])
-                    wave_b[i] = wb_high
-                    state_down = "WC"
-                    wc_low = current_close
-                    wc_idx = i
-                    
-                    # Calculate Wave C projection: High_WA - (High_WA - Low_WA) * 1.618
-                    wa_range = wa_high - wa_low
-                    wave_c_proj[i] = wa_high - wa_range * 1.618
-                elif wc_locked:
-                    # Wave already locked, just track for next cycle
-                    pass
-            else:
-                wave_b[i] = wb_high if not np.isnan(wb_high) else np.nan
-        
-        elif state_down == "WC":
-            # Track Wave C low
-            if current_close < wc_low:
-                wc_low = current_close
-                wc_idx = i
-            
-            # Wave C LOCKED when close <= Wave A low
-            if current_close <= wa_low:
-                wc_high = np.max(close[max(0, wb_idx + 1) : i + 1])
-                wave_c[i] = wc_high
-                wc_locked = True
-                
-                # Check if uptrend resumes (new Wave 1 starting)
-                # This will be detected in next iteration when new 21-bar-low found
-            else:
-                wave_c[i] = wc_high if not np.isnan(wc_high) else np.nan
-        
-        # Update wave state labels for charting
-        if state_up == "W1_confirmed" or state_up == "W1":
-            wave_state[i] = "W1"
-        elif state_up == "W2":
-            wave_state[i] = "W2"
-        elif state_up == "W3":
-            wave_state[i] = "W3"
-        elif state_up == "W4":
-            wave_state[i] = "W4"
-        elif state_up == "W5":
-            wave_state[i] = "W5"
-        elif state_down == "WA":
-            wave_state[i] = "WA"
-        elif state_down == "WB":
-            wave_state[i] = "WB"
-        elif state_down == "WC":
-            wave_state[i] = "WC"
-    
-    # Convert to pandas Series
+                trend = "bear"
+                state = "D1_origin"
+                sw1_high = c
+                wave_state[i] = "D1_origin"
+                continue
+
+        if trend == "bull":
+            if state == "W1_origin":
+                if c < bw1_low:
+                    bw1_low = c
+                if is_n_bar_high(i, 13):
+                    bw1_high = c
+                    state = "W1_wait_end"
+
+            elif state == "W1_wait_end":
+                if is_n_bar_low(i, 8):
+                    wave_1[i] = bw1_high
+                    bw2_low = c
+                    state = "W2"
+
+            elif state == "W2":
+                if c < bw2_low:
+                    bw2_low = c
+                if is_n_bar_high(i, 21):
+                    # Invalidation: W2 cannot close below W1 origin low.
+                    if c < bw1_low:
+                        reset_cycle()
+                        continue
+                    bw2_high = c
+                    wave_2[i] = bw2_high
+                    w1_range = bw1_high - bw1_low
+                    wave_2_proj[i] = bw1_low + w1_range * 0.618
+                    wave_3_proj[i] = bw1_low + w1_range * 1.618
+                    bw3_low = c
+                    bw3_start = i
+                    state = "W3"
+
+            elif state == "W3":
+                if c < bw3_low:
+                    bw3_low = c
+                if is_n_bar_low(i, 13):
+                    bw3_high = float(np.max(close[max(0, bw3_start) : i + 1]))
+                    # Wave 3 peak must exceed Wave 1 peak.
+                    if bw3_high <= bw1_high:
+                        reset_cycle()
+                        continue
+                    wave_3[i] = bw3_high
+                    bw4_low = c
+                    bw4_high = np.nan
+                    state = "W4"
+
+            elif state == "W4":
+                if c < bw4_low:
+                    bw4_low = c
+                # Invalidation: Wave 4 cannot close below Wave 2 low.
+                if c < bw2_low:
+                    reset_cycle()
+                    continue
+                if is_n_bar_high(i, 34):
+                    bw4_high = c
+                    wave_4[i] = bw4_high
+                    w3_range = bw3_high - bw3_low
+                    wave_4_proj[i] = bw3_high - (w3_range * 0.382)
+                    wave_5_proj[i] = bw3_low + (w3_range * 1.618)
+                    bw5_start = i
+                    bw5_low = c
+                    state = "W5"
+
+            elif state == "W5":
+                if c < bw5_low:
+                    bw5_low = c
+                if is_n_bar_low(i, 13):
+                    bw5_high = float(np.max(close[max(0, bw5_start) : i + 1]))
+                    # Wave 5 peak must exceed Wave 3 peak.
+                    if bw5_high <= bw3_high:
+                        reset_cycle()
+                        continue
+                    wave_5[i] = bw5_high
+                    bwa_start = i
+                    bwa_low = c
+                    bwa_high = c
+                    state = "WA"
+
+            elif state == "WA":
+                if c < bwa_low:
+                    bwa_low = c
+                if c > bwa_high:
+                    bwa_high = c
+                if is_n_bar_high(i, 8):
+                    wave_a[i] = bwa_low
+                    bwb_start = i
+                    bwb_high = c
+                    state = "WB"
+
+            elif state == "WB":
+                if c > bwb_high:
+                    bwb_high = c
+                # Enforce continuously during Wave B.
+                if c > bw5_high:
+                    reset_cycle()
+                    continue
+                if is_n_bar_low(i, 21):
+                    wave_b[i] = bwb_high
+                    wa_range = bwa_high - bwa_low
+                    wave_c_proj[i] = bwa_high - (wa_range * 1.618)
+                    bwc_low = c
+                    state = "WC"
+
+            elif state == "WC":
+                if c < bwc_low:
+                    bwc_low = c
+                # Wave C completes when close <= Wave A low.
+                if c <= bwa_low:
+                    wave_c[i] = bwc_low
+                    reset_cycle()
+                    continue
+
+            wave_state[i] = state
+
+        elif trend == "bear":
+            if state == "D1_origin":
+                if c > sw1_high:
+                    sw1_high = c
+                if is_n_bar_low(i, 13):
+                    sw1_low = c
+                    state = "D1_wait_end"
+
+            elif state == "D1_wait_end":
+                if is_n_bar_high(i, 8):
+                    wave_1[i] = sw1_low
+                    sw2_high = c
+                    state = "D2"
+
+            elif state == "D2":
+                if c > sw2_high:
+                    sw2_high = c
+                if is_n_bar_low(i, 21):
+                    # Invalidation: mirrored rule (cannot close above Wave1 origin high).
+                    if c > sw1_high:
+                        reset_cycle()
+                        continue
+                    sw2_low = c
+                    wave_2[i] = sw2_low
+                    w1_range = sw1_high - sw1_low
+                    wave_2_proj[i] = sw1_high - w1_range * 0.618
+                    wave_3_proj[i] = sw1_high - w1_range * 1.618
+                    sw3_high = c
+                    sw3_start = i
+                    state = "D3"
+
+            elif state == "D3":
+                if c > sw3_high:
+                    sw3_high = c
+                if is_n_bar_high(i, 13):
+                    sw3_low = float(np.min(close[max(0, sw3_start) : i + 1]))
+                    # Mirrored: Wave 3 trough must be below Wave 1 trough.
+                    if sw3_low >= sw1_low:
+                        reset_cycle()
+                        continue
+                    wave_3[i] = sw3_low
+                    sw4_high = c
+                    sw4_low = np.nan
+                    state = "D4"
+
+            elif state == "D4":
+                if c > sw4_high:
+                    sw4_high = c
+                # Mirrored invalidation: Wave 4 cannot close above Wave 2 high.
+                if c > sw2_high:
+                    reset_cycle()
+                    continue
+                if is_n_bar_low(i, 34):
+                    sw4_low = c
+                    wave_4[i] = sw4_low
+                    w3_range = sw3_high - sw3_low
+                    wave_4_proj[i] = sw3_low + (w3_range * 0.382)
+                    wave_5_proj[i] = sw3_high - (w3_range * 1.618)
+                    sw5_start = i
+                    sw5_high = c
+                    state = "D5"
+
+            elif state == "D5":
+                if c > sw5_high:
+                    sw5_high = c
+                if is_n_bar_high(i, 13):
+                    sw5_low = float(np.min(close[max(0, sw5_start) : i + 1]))
+                    if sw5_low >= sw3_low:
+                        reset_cycle()
+                        continue
+                    wave_5[i] = sw5_low
+                    swa_start = i
+                    swa_low = c
+                    swa_high = c
+                    state = "DA"
+
+            elif state == "DA":
+                if c < swa_low:
+                    swa_low = c
+                if c > swa_high:
+                    swa_high = c
+                if is_n_bar_low(i, 8):
+                    wave_a[i] = swa_high
+                    swb_start = i
+                    swb_low = c
+                    state = "DB"
+
+            elif state == "DB":
+                if c < swb_low:
+                    swb_low = c
+                # Continuous mirrored Wave B constraint.
+                if c < sw5_low:
+                    reset_cycle()
+                    continue
+                if is_n_bar_high(i, 21):
+                    wave_b[i] = swb_low
+                    sa_range = swa_high - swa_low
+                    wave_c_proj[i] = swa_low + (sa_range * 1.618)
+                    swc_high = c
+                    state = "DC"
+
+            elif state == "DC":
+                if c > swc_high:
+                    swc_high = c
+                # Mirrored Wave C completion.
+                if c >= swa_high:
+                    wave_c[i] = swc_high
+                    reset_cycle()
+                    continue
+
+            wave_state[i] = state
+
     return (
         pd.Series(wave_1, index=df.index),
         pd.Series(wave_2, index=df.index),
@@ -626,7 +671,9 @@ def _waves(df: pd.DataFrame) -> tuple:
         pd.Series(wave_a, index=df.index),
         pd.Series(wave_b, index=df.index),
         pd.Series(wave_c, index=df.index),
+        pd.Series(wave_2_proj, index=df.index),
         pd.Series(wave_3_proj, index=df.index),
+        pd.Series(wave_4_proj, index=df.index),
         pd.Series(wave_5_proj, index=df.index),
         pd.Series(wave_c_proj, index=df.index),
         pd.Series(wave_state, index=df.index),
@@ -680,6 +727,8 @@ def apply_demark(df: pd.DataFrame) -> pd.DataFrame:
     (
         wave_1, wave_2, wave_3, wave_4, wave_5,
         wave_a, wave_b, wave_c,
+        wave_2_proj,
+        wave_4_proj,
         wave_3_proj, wave_5_proj, wave_c_proj,
         wave_state
     ) = _waves(out)
@@ -691,7 +740,9 @@ def apply_demark(df: pd.DataFrame) -> pd.DataFrame:
     out["wave_a"] = wave_a
     out["wave_b"] = wave_b
     out["wave_c"] = wave_c
+    out["wave_2_proj"] = wave_2_proj
     out["wave_3_proj"] = wave_3_proj
+    out["wave_4_proj"] = wave_4_proj
     out["wave_5_proj"] = wave_5_proj
     out["wave_c_proj"] = wave_c_proj
     out["wave_state"] = wave_state
