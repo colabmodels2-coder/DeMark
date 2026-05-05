@@ -728,8 +728,9 @@ def apply_demark(df: pd.DataFrame) -> pd.DataFrame:
         wave_1, wave_2, wave_3, wave_4, wave_5,
         wave_a, wave_b, wave_c,
         wave_2_proj,
+        wave_3_proj,
         wave_4_proj,
-        wave_3_proj, wave_5_proj, wave_c_proj,
+        wave_5_proj, wave_c_proj,
         wave_state
     ) = _waves(out)
     out["wave_1"] = wave_1
