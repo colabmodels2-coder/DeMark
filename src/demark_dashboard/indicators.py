@@ -119,12 +119,16 @@ def _setup_counts(df: pd.DataFrame, bullish_flip: pd.Series, bearish_flip: pd.Se
     return buy_setup, sell_setup, buy_perfected, sell_perfected
 
 
-def _countdowns(df: pd.DataFrame, buy_setup: pd.Series, sell_setup: pd.Series) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
+def _countdowns(
+    df: pd.DataFrame,
+    buy_setup: pd.Series,
+    sell_setup: pd.Series,
+) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]:
     """
     TD Countdown: 13 bars comparing close to low/high 2 bars earlier.
     Buy Countdown: 13 closes <= low[2 bars ago]
     Sell Countdown: 13 closes >= high[2 bars ago]
-    Returns: buy_countdown, sell_countdown, deferred_buy (+), deferred_sell (+)
+    Returns: buy_countdown, sell_countdown, deferred_buy (+), deferred_sell (+), recycled_buy (R), recycled_sell (R)
     """
     close = df["Close"]
     low = df["Low"]
@@ -134,6 +138,8 @@ def _countdowns(df: pd.DataFrame, buy_setup: pd.Series, sell_setup: pd.Series) -
     sell_countdown = pd.Series(0, index=df.index, dtype="int64")
     deferred_buy = pd.Series(False, index=df.index)
     deferred_sell = pd.Series(False, index=df.index)
+    recycled_buy = pd.Series(False, index=df.index)
+    recycled_sell = pd.Series(False, index=df.index)
 
     active_buy = False
     active_sell = False
@@ -145,6 +151,17 @@ def _countdowns(df: pd.DataFrame, buy_setup: pd.Series, sell_setup: pd.Series) -
     for i in range(len(df)):
         if i < 2:
             continue
+
+        # Recycle: a new same-direction Setup 9 before Countdown 13 completion restarts the countdown.
+        if active_buy and 0 < bcount < 13 and buy_setup.iloc[i] == 9:
+            recycled_buy.iloc[i] = True
+            bcount = 0
+            buy_cd8_low = np.inf
+
+        if active_sell and 0 < scount < 13 and sell_setup.iloc[i] == 9:
+            recycled_sell.iloc[i] = True
+            scount = 0
+            sell_cd8_high = -np.inf
 
         # Initiate countdown on completed setup
         if buy_setup.iloc[i] == 9:
@@ -205,7 +222,7 @@ def _countdowns(df: pd.DataFrame, buy_setup: pd.Series, sell_setup: pd.Series) -
                 elif scount == 0:
                     active_sell = False
 
-    return buy_countdown, sell_countdown, deferred_buy, deferred_sell
+    return buy_countdown, sell_countdown, deferred_buy, deferred_sell, recycled_buy, recycled_sell
 
 
 def _tdst_levels(df: pd.DataFrame, buy_setup: pd.Series, sell_setup: pd.Series) -> tuple[pd.Series, pd.Series]:
@@ -251,11 +268,17 @@ def apply_demark(df: pd.DataFrame) -> pd.DataFrame:
     out["sell_perfected"] = sell_perfected
 
     # Countdown counts
-    buy_countdown, sell_countdown, deferred_buy, deferred_sell = _countdowns(out, buy_setup, sell_setup)
+    buy_countdown, sell_countdown, deferred_buy, deferred_sell, recycled_buy, recycled_sell = _countdowns(
+        out,
+        buy_setup,
+        sell_setup,
+    )
     out["buy_countdown"] = buy_countdown
     out["sell_countdown"] = sell_countdown
     out["deferred_buy"] = deferred_buy
     out["deferred_sell"] = deferred_sell
+    out["recycled_buy"] = recycled_buy
+    out["recycled_sell"] = recycled_sell
 
     # TDST levels
     tdst_buy, tdst_sell = _tdst_levels(out, buy_setup, sell_setup)
