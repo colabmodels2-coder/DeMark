@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import importlib.util
 from pathlib import Path
+import pandas as pd
 
 import streamlit as st
 
@@ -130,8 +131,15 @@ for symbol in selected:
         st.warning(f"⚠️ No data for {symbol}.")
         continue
 
-    demark_df = apply_demark(data)
-    latest = demark_df.iloc[-1]
+    demark_df_daily = apply_demark(data)
+    latest = demark_df_daily.iloc[-1]
+
+    weekly = (
+        data.resample("W-FRI")
+        .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
+        .dropna()
+    )
+    demark_df_weekly = apply_demark(weekly) if not weekly.empty else pd.DataFrame()
 
     rows.append(
         {
@@ -149,11 +157,22 @@ for symbol in selected:
     )
 
     st.subheader(f"{symbol}")
-    fig = build_figure(demark_df, symbol)
-    st.plotly_chart(fig, use_container_width=True)
+    fig_daily = build_figure(demark_df_daily, symbol, timeframe_label="Daily")
+    st.plotly_chart(fig_daily, use_container_width=True)
+
+    st.subheader(f"{symbol} — Weekly")
+    if demark_df_weekly.empty:
+        st.info("Not enough data to build weekly chart.")
+    else:
+        fig_weekly = build_figure(demark_df_weekly, symbol, timeframe_label="Weekly")
+        st.plotly_chart(fig_weekly, use_container_width=True)
 
     with st.expander(f"📋 Insights: {symbol}", expanded=True):
-        st.markdown(build_insight_text(demark_df, symbol))
+        st.markdown("#### Daily")
+        st.markdown(build_insight_text(demark_df_daily, symbol))
+        if not demark_df_weekly.empty:
+            st.markdown("#### Weekly")
+            st.markdown(build_insight_text(demark_df_weekly, f"{symbol} (Weekly)"))
 
 # Summary table
 if rows:
