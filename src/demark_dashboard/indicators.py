@@ -142,10 +142,68 @@ def _setup_counts(df: pd.DataFrame, bullish_flip: pd.Series, bearish_flip: pd.Se
     return buy_setup, sell_setup, buy_perfected, sell_perfected
 
 
+def _setup_extensions(
+    df: pd.DataFrame,
+    bullish_flip: pd.Series,
+    bearish_flip: pd.Series,
+) -> tuple[pd.Series, pd.Series]:
+    """Internal Setup counts that continue beyond 9 for recycle qualification."""
+    close = df["Close"]
+    buy_ext = pd.Series(0, index=df.index, dtype="int64")
+    sell_ext = pd.Series(0, index=df.index, dtype="int64")
+
+    buy_active = False
+    sell_active = False
+    bcount = 0
+    scount = 0
+
+    for i in range(len(df)):
+        if i < 5:
+            continue
+
+        if bearish_flip.iloc[i]:
+            buy_active = True
+            sell_active = False
+            bcount = 1
+            scount = 0
+            buy_ext.iloc[i] = 1
+            continue
+
+        if bullish_flip.iloc[i]:
+            sell_active = True
+            buy_active = False
+            scount = 1
+            bcount = 0
+            sell_ext.iloc[i] = 1
+            continue
+
+        if buy_active:
+            if close.iloc[i] < close.iloc[i - 4]:
+                bcount += 1
+                buy_ext.iloc[i] = bcount
+            else:
+                buy_active = False
+                bcount = 0
+
+        if sell_active:
+            if close.iloc[i] > close.iloc[i - 4]:
+                scount += 1
+                sell_ext.iloc[i] = scount
+            else:
+                sell_active = False
+                scount = 0
+
+    return buy_ext, sell_ext
+
+
 def _countdowns(
     df: pd.DataFrame,
     buy_setup: pd.Series,
     sell_setup: pd.Series,
+    buy_setup_ext: pd.Series,
+    sell_setup_ext: pd.Series,
+    tdst_buy: pd.Series,
+    tdst_sell: pd.Series,
 ) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]:
     """
         TD Countdown: 13 bars comparing close to low/high 2 bars earlier.
@@ -183,6 +241,8 @@ def _countdowns(
 
     buy_trackers: list[dict] = []
     sell_trackers: list[dict] = []
+    last_buy_13_idx = None
+    last_sell_13_idx = None
 
     def _progress_score(tracker: dict) -> float:
         if tracker["done"]:
@@ -261,6 +321,15 @@ def _countdowns(
         if i < 2:
             continue
 
+        true_low = min(float(low.iloc[i]), float(close.iloc[i - 1]))
+        true_high = max(float(high.iloc[i]), float(close.iloc[i - 1]))
+
+        # TDST cancellation of incomplete countdowns.
+        if buy_trackers and pd.notna(tdst_buy.iloc[i]) and true_low > float(tdst_buy.iloc[i]):
+            buy_trackers = []
+        if sell_trackers and pd.notna(tdst_sell.iloc[i]) and true_high < float(tdst_sell.iloc[i]):
+            sell_trackers = []
+
         # Opposite-direction Setup 9 cancels existing background trackers.
         if buy_setup.iloc[i] == 9 and sell_trackers:
             sell_trackers = []
@@ -269,12 +338,8 @@ def _countdowns(
 
         # Start a new background tracker on every Setup 9.
         if buy_setup.iloc[i] == 9:
-            if any(not t["done"] for t in buy_trackers):
-                recycled_buy.iloc[i] = True
             buy_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
         if sell_setup.iloc[i] == 9:
-            if any(not t["done"] for t in sell_trackers):
-                recycled_sell.iloc[i] = True
             sell_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
 
         buy_events: list[tuple[int | None, bool]] = []
@@ -291,6 +356,8 @@ def _countdowns(
             buy_print, buy_deferred = buy_events[buy_best_idx]
             if buy_print is not None:
                 buy_countdown.iloc[i] = int(buy_print)
+                if int(buy_print) == 13:
+                    last_buy_13_idx = df.index[i]
             if buy_deferred:
                 deferred_buy.iloc[i] = True
             buy_deferred_active.iloc[i] = bool(buy_trackers[buy_best_idx]["awaiting_13"])
@@ -300,9 +367,23 @@ def _countdowns(
             sell_print, sell_deferred = sell_events[sell_best_idx]
             if sell_print is not None:
                 sell_countdown.iloc[i] = int(sell_print)
+                if int(sell_print) == 13:
+                    last_sell_13_idx = df.index[i]
             if sell_deferred:
                 deferred_sell.iloc[i] = True
             sell_deferred_active.iloc[i] = bool(sell_trackers[sell_best_idx]["awaiting_13"])
+
+        # Recycle applies to a completed 13 when a subsequent overlapping same-direction
+        # Setup reaches 22 (default recycle threshold in the official implementation).
+        if last_buy_13_idx is not None and buy_setup_ext.iloc[i] >= 22:
+            buy_countdown.loc[last_buy_13_idx] = 0
+            recycled_buy.loc[last_buy_13_idx] = True
+            last_buy_13_idx = None
+
+        if last_sell_13_idx is not None and sell_setup_ext.iloc[i] >= 22:
+            sell_countdown.loc[last_sell_13_idx] = 0
+            recycled_sell.loc[last_sell_13_idx] = True
+            last_sell_13_idx = None
 
         buy_countdown_active.iloc[i] = any(not t["done"] for t in buy_trackers)
         sell_countdown_active.iloc[i] = any(not t["done"] for t in sell_trackers)
@@ -322,23 +403,30 @@ def _countdowns(
 
 def _tdst_levels(df: pd.DataFrame, buy_setup: pd.Series, sell_setup: pd.Series) -> tuple[pd.Series, pd.Series]:
     """
-    TDST (TD Setup Trend): Support/Resistance levels from completed setups.
-    Buy Support: Low of 9-bar buy setup
-    Sell Resistance: High of 9-bar sell setup
+    TDST (TD Setup Trend) from completed setups using true highs/lows.
+    Buy Setup -> TDST Resistance = highest true high of completed 9 Buy Setup series.
+    Sell Setup -> TDST Support = lowest true low of completed 9 Sell Setup series.
+
+    Column naming is preserved for compatibility:
+      tdst_buy  = TDST resistance from Buy Setup
+      tdst_sell = TDST support from Sell Setup
     """
     tdst_buy = pd.Series(np.nan, index=df.index)
     tdst_sell = pd.Series(np.nan, index=df.index)
 
     curr_buy = np.nan
     curr_sell = np.nan
+    prev_close = df["Close"].shift(1)
+    true_high = pd.concat([df["High"], prev_close], axis=1).max(axis=1)
+    true_low = pd.concat([df["Low"], prev_close], axis=1).min(axis=1)
 
     for i in range(len(df)):
         if buy_setup.iloc[i] == 9:
             window = df.iloc[max(0, i - 8) : i + 1]
-            curr_buy = float(window["Low"].min())
+            curr_buy = float(true_high.iloc[max(0, i - 8) : i + 1].max())
         if sell_setup.iloc[i] == 9:
             window = df.iloc[max(0, i - 8) : i + 1]
-            curr_sell = float(window["High"].max())
+            curr_sell = float(true_low.iloc[max(0, i - 8) : i + 1].min())
 
         tdst_buy.iloc[i] = curr_buy
         tdst_sell.iloc[i] = curr_sell
@@ -709,6 +797,16 @@ def apply_demark(df: pd.DataFrame) -> pd.DataFrame:
     out["buy_perfected"] = buy_perfected
     out["sell_perfected"] = sell_perfected
 
+    # Extended setup counts (internal recycle qualification support)
+    buy_setup_ext, sell_setup_ext = _setup_extensions(out, bullish_flip, bearish_flip)
+    out["buy_setup_ext"] = buy_setup_ext
+    out["sell_setup_ext"] = sell_setup_ext
+
+    # TDST levels
+    tdst_buy, tdst_sell = _tdst_levels(out, buy_setup, sell_setup)
+    out["tdst_buy"] = tdst_buy
+    out["tdst_sell"] = tdst_sell
+
     # Countdown counts
     (
         buy_countdown, sell_countdown,
@@ -716,7 +814,7 @@ def apply_demark(df: pd.DataFrame) -> pd.DataFrame:
         recycled_buy, recycled_sell,
         buy_countdown_active, sell_countdown_active,
         buy_deferred_active, sell_deferred_active,
-    ) = _countdowns(out, buy_setup, sell_setup)
+    ) = _countdowns(out, buy_setup, sell_setup, buy_setup_ext, sell_setup_ext, tdst_buy, tdst_sell)
     out["buy_countdown"] = buy_countdown
     out["sell_countdown"] = sell_countdown
     out["deferred_buy"] = deferred_buy
@@ -727,11 +825,6 @@ def apply_demark(df: pd.DataFrame) -> pd.DataFrame:
     out["sell_countdown_active"] = sell_countdown_active
     out["buy_deferred_active"] = buy_deferred_active
     out["sell_deferred_active"] = sell_deferred_active
-
-    # TDST levels
-    tdst_buy, tdst_sell = _tdst_levels(out, buy_setup, sell_setup)
-    out["tdst_buy"] = tdst_buy
-    out["tdst_sell"] = tdst_sell
 
     # True range for risk calculations
     out["true_range"] = _true_range(out)
