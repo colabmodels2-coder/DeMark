@@ -154,6 +154,26 @@ def _countdowns(
         if i < 2:
             continue
 
+        # CRITICAL: When opposite-direction Setup 9 completes, FORCE switch and cancel prior countdown
+        # This must be checked BEFORE recycle logic
+        if buy_setup.iloc[i] == 9 and active_sell:
+            # Buy setup completed while sell countdown active: cancel sell, activate buy
+            active_sell = False
+            active_buy = True
+            bcount = 0
+            scount = 0
+            buy_cd8_close = np.nan
+            sell_cd8_close = np.nan
+
+        if sell_setup.iloc[i] == 9 and active_buy:
+            # Sell setup completed while buy countdown active: cancel buy, activate sell
+            active_buy = False
+            active_sell = True
+            scount = 0
+            bcount = 0
+            sell_cd8_close = np.nan
+            buy_cd8_close = np.nan
+
         # Recycle: a new same-direction Setup 9 before Countdown 13 completion restarts the countdown.
         if active_buy and 0 < bcount < 13 and buy_setup.iloc[i] == 9:
             recycled_buy.iloc[i] = True
@@ -165,24 +185,16 @@ def _countdowns(
             scount = 0
             sell_cd8_close = np.nan
 
-        # MUTUAL EXCLUSIVITY: Opposite-direction Setup 9 cancels prior countdown
+        # Initiate countdown when Setup 9 completes and not already active
         if buy_setup.iloc[i] == 9 and not active_buy:
-            # Initiate Buy Countdown: cancel any Sell Countdown
             active_buy = True
-            active_sell = False
             bcount = 0
-            scount = 0
             buy_cd8_close = np.nan
-            sell_cd8_close = np.nan
 
         if sell_setup.iloc[i] == 9 and not active_sell:
-            # Initiate Sell Countdown: cancel any Buy Countdown
             active_sell = True
-            active_buy = False
             scount = 0
-            bcount = 0
             sell_cd8_close = np.nan
-            buy_cd8_close = np.nan
 
         # Process buy countdown (only if active and sell not active)
         if active_buy and not active_sell:
