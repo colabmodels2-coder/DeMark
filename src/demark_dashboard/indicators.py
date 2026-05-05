@@ -333,6 +333,306 @@ def _tdst_levels(df: pd.DataFrame, buy_setup: pd.Series, sell_setup: pd.Series) 
     return tdst_buy, tdst_sell
 
 
+def _waves(df: pd.DataFrame) -> tuple:
+    """
+    TD D-Wave detection using closing prices as per Jason Perl's methodology.
+    Returns: wave_1, wave_2, wave_3, wave_4, wave_5, wave_a, wave_b, wave_c,
+             wave_3_projection, wave_5_projection, wave_c_projection,
+             wave_state_label (for charting)
+    """
+    close = df["Close"].values
+    n = len(close)
+    
+    # Initialize output arrays
+    wave_1 = np.full(n, np.nan)
+    wave_2 = np.full(n, np.nan)
+    wave_3 = np.full(n, np.nan)
+    wave_4 = np.full(n, np.nan)
+    wave_5 = np.full(n, np.nan)
+    wave_a = np.full(n, np.nan)
+    wave_b = np.full(n, np.nan)
+    wave_c = np.full(n, np.nan)
+    
+    # Projection targets
+    wave_3_proj = np.full(n, np.nan)
+    wave_5_proj = np.full(n, np.nan)
+    wave_c_proj = np.full(n, np.nan)
+    
+    # Wave state tracking
+    wave_state = [""] * n  # "W1", "W2", "W3", etc.
+    
+    # State machine for uptrend sequence
+    state_up = None  # None, "W1_origin", "W1_confirmed", "W1", "W2", "W3", "W4", "W5"
+    state_down = None  # None, "WA", "WB", "WC"
+    
+    # Wave extremes tracking
+    w1_low = np.nan
+    w1_high = np.nan
+    w1_idx = -1
+    w2_low = np.nan
+    w2_high = np.nan
+    w2_idx = -1
+    w3_low = np.nan
+    w3_high = np.nan
+    w3_idx = -1
+    w4_low = np.nan
+    w4_high = np.nan
+    w4_idx = -1
+    w5_low = np.nan
+    w5_high = np.nan
+    w5_idx = -1
+    
+    wa_low = np.nan
+    wa_high = np.nan
+    wa_idx = -1
+    wb_low = np.nan
+    wb_high = np.nan
+    wb_idx = -1
+    wc_low = np.nan
+    wc_high = np.nan
+    wc_idx = -1
+    
+    wc_locked = False  # Wave C completed (close < Wave A low)
+    
+    # Helper: Check if bar i has N-bar-low close
+    def is_n_bar_low(i: int, n: int) -> bool:
+        if i < n - 1:
+            return False
+        return close[i] < np.min(close[i - n + 1 : i])
+    
+    # Helper: Check if bar i has N-bar-high close
+    def is_n_bar_high(i: int, n: int) -> bool:
+        if i < n - 1:
+            return False
+        return close[i] > np.max(close[i - n + 1 : i])
+    
+    # Main state machine loop
+    for i in range(n):
+        current_close = close[i]
+        
+        # ===== UPTREND SEQUENCE (Waves 1-5) =====
+        
+        if state_up is None:
+            # Looking for Wave 1 origin: 21-bar-low
+            if is_n_bar_low(i, 21):
+                state_up = "W1_origin"
+                w1_low = current_close
+                w1_idx = i
+        
+        elif state_up == "W1_origin":
+            # Confirm Wave 1: 13-bar-high after origin
+            if is_n_bar_high(i, 13):
+                state_up = "W1_confirmed"
+                w1_high = current_close
+                wave_1[i] = current_close
+                wave_state[i] = "W1"
+            # If price falls to new low before 13-bar-high, reset origin
+            elif current_close < w1_low:
+                w1_low = current_close
+                w1_idx = i
+        
+        elif state_up == "W1_confirmed":
+            # Wave 1 ends with 8-bar-low
+            if is_n_bar_low(i, 8):
+                state_up = "W2"
+                w2_low = current_close
+                w2_idx = i
+                wave_1[i] = w1_high
+            else:
+                wave_1[i] = w1_high
+        
+        elif state_up == "W2":
+            # Wave 2 ends with 21-bar-high (confirms Wave 3 start)
+            if is_n_bar_high(i, 21):
+                # Wave 2 cannot close below Wave 1 low (invalidation rule)
+                if current_close >= w1_low:
+                    state_up = "W3"
+                    w2_high = current_close
+                    w2_idx = i
+                    wave_2[i] = current_close
+                    w3_low = np.inf
+                    
+                    # Calculate Wave 3 projection: Low_W1 + (High_W1 - Low_W1) * 1.618
+                    w1_range = w1_high - w1_low
+                    wave_3_proj[i] = w1_low + w1_range * 1.618
+                else:
+                    # Wave invalidated, restart
+                    state_up = None
+                    state_down = None
+                    wc_locked = False
+            else:
+                # Update Wave 2 low if lower
+                if current_close < w2_low:
+                    w2_low = current_close
+                    w2_idx = i
+                wave_2[i] = w2_high if not np.isnan(w2_high) else w2_low
+        
+        elif state_up == "W3":
+            # Track Wave 3 low
+            if current_close < w3_low:
+                w3_low = current_close
+                w3_idx = i
+            
+            # Wave 3 ends with 13-bar-low (confirms Wave 4 start)
+            if is_n_bar_low(i, 13):
+                state_up = "W4"
+                w3_high = np.max(close[max(0, w2_idx + 1) : i + 1])
+                w4_low = current_close
+                w4_idx = i
+                wave_3[i] = w3_high
+                
+                # Wave 3 peak must be > Wave 1 peak
+                if w3_high > w1_high:
+                    pass  # Valid
+                else:
+                    # Invalid wave structure, reset
+                    state_up = None
+                    state_down = None
+                    wc_locked = False
+            else:
+                wave_3[i] = w3_high if not np.isnan(w3_high) else np.nan
+        
+        elif state_up == "W4":
+            # Track Wave 4 low
+            if current_close < w4_low:
+                w4_low = current_close
+                w4_idx = i
+            
+            # Wave 4 ends with 34-bar-high (confirms Wave 5 start)
+            if is_n_bar_high(i, 34):
+                state_up = "W5"
+                w4_high = current_close
+                w4_idx = i
+                wave_4[i] = current_close
+                w5_low = np.inf
+                
+                # Calculate Wave 5 projection: Low_W3 + (High_W3 - Low_W3) * 1.618
+                w3_range = w3_high - w3_low
+                wave_5_proj[i] = w3_low + w3_range * 1.618
+            else:
+                wave_4[i] = w4_high if not np.isnan(w4_high) else np.nan
+        
+        elif state_up == "W5":
+            # Track Wave 5 low
+            if current_close < w5_low:
+                w5_low = current_close
+                w5_idx = i
+            
+            # Wave 5 ends with 13-bar-low (start of Wave A)
+            if is_n_bar_low(i, 13):
+                w5_high = np.max(close[max(0, w4_idx + 1) : i + 1])
+                wave_5[i] = w5_high
+                
+                # Wave 5 peak must be > Wave 3 peak
+                if w5_high > w3_high:
+                    state_up = "COMPLETE"
+                    state_down = "WA"
+                    wa_low = current_close
+                    wa_idx = i
+                    wc_locked = False
+                else:
+                    # Invalid, reset
+                    state_up = None
+                    state_down = None
+                    wc_locked = False
+            else:
+                wave_5[i] = w5_high if not np.isnan(w5_high) else np.nan
+        
+        # ===== CORRECTIVE SEQUENCE (Waves A-B-C) =====
+        
+        if state_down == "WA":
+            # Track Wave A low
+            if current_close < wa_low:
+                wa_low = current_close
+                wa_idx = i
+            
+            # Wave A ends with 8-bar-high (start of Wave B)
+            if is_n_bar_high(i, 8):
+                wa_high = np.max(close[max(0, w5_idx + 1) : i + 1])
+                wave_a[i] = wa_high
+                state_down = "WB"
+                wb_low = current_close
+                wb_idx = i
+            else:
+                wave_a[i] = wa_high if not np.isnan(wa_high) else np.nan
+        
+        elif state_down == "WB":
+            # Track Wave B high
+            if current_close > wb_low:
+                wb_low = current_close
+                wb_idx = i
+            
+            # Wave B ends with 21-bar-low (start of Wave C)
+            if is_n_bar_low(i, 21):
+                # Wave B cannot close above Wave 5 high (until Wave C locks)
+                if not wc_locked and current_close <= w5_high:
+                    wb_high = np.max(close[max(0, wa_idx + 1) : i + 1])
+                    wave_b[i] = wb_high
+                    state_down = "WC"
+                    wc_low = current_close
+                    wc_idx = i
+                    
+                    # Calculate Wave C projection: High_WA - (High_WA - Low_WA) * 1.618
+                    wa_range = wa_high - wa_low
+                    wave_c_proj[i] = wa_high - wa_range * 1.618
+                elif wc_locked:
+                    # Wave already locked, just track for next cycle
+                    pass
+            else:
+                wave_b[i] = wb_high if not np.isnan(wb_high) else np.nan
+        
+        elif state_down == "WC":
+            # Track Wave C low
+            if current_close < wc_low:
+                wc_low = current_close
+                wc_idx = i
+            
+            # Wave C LOCKED when close <= Wave A low
+            if current_close <= wa_low:
+                wc_high = np.max(close[max(0, wb_idx + 1) : i + 1])
+                wave_c[i] = wc_high
+                wc_locked = True
+                
+                # Check if uptrend resumes (new Wave 1 starting)
+                # This will be detected in next iteration when new 21-bar-low found
+            else:
+                wave_c[i] = wc_high if not np.isnan(wc_high) else np.nan
+        
+        # Update wave state labels for charting
+        if state_up == "W1_confirmed" or state_up == "W1":
+            wave_state[i] = "W1"
+        elif state_up == "W2":
+            wave_state[i] = "W2"
+        elif state_up == "W3":
+            wave_state[i] = "W3"
+        elif state_up == "W4":
+            wave_state[i] = "W4"
+        elif state_up == "W5":
+            wave_state[i] = "W5"
+        elif state_down == "WA":
+            wave_state[i] = "WA"
+        elif state_down == "WB":
+            wave_state[i] = "WB"
+        elif state_down == "WC":
+            wave_state[i] = "WC"
+    
+    # Convert to pandas Series
+    return (
+        pd.Series(wave_1, index=df.index),
+        pd.Series(wave_2, index=df.index),
+        pd.Series(wave_3, index=df.index),
+        pd.Series(wave_4, index=df.index),
+        pd.Series(wave_5, index=df.index),
+        pd.Series(wave_a, index=df.index),
+        pd.Series(wave_b, index=df.index),
+        pd.Series(wave_c, index=df.index),
+        pd.Series(wave_3_proj, index=df.index),
+        pd.Series(wave_5_proj, index=df.index),
+        pd.Series(wave_c_proj, index=df.index),
+        pd.Series(wave_state, index=df.index),
+    )
+
+
 def apply_demark(df: pd.DataFrame) -> pd.DataFrame:
     """Apply complete TD Sequential indicators as per Jason Perl's DeMark Indicators."""
     out = df.copy()
@@ -375,5 +675,25 @@ def apply_demark(df: pd.DataFrame) -> pd.DataFrame:
 
     # True range for risk calculations
     out["true_range"] = _true_range(out)
+
+    # TD D-Wave analysis
+    (
+        wave_1, wave_2, wave_3, wave_4, wave_5,
+        wave_a, wave_b, wave_c,
+        wave_3_proj, wave_5_proj, wave_c_proj,
+        wave_state
+    ) = _waves(out)
+    out["wave_1"] = wave_1
+    out["wave_2"] = wave_2
+    out["wave_3"] = wave_3
+    out["wave_4"] = wave_4
+    out["wave_5"] = wave_5
+    out["wave_a"] = wave_a
+    out["wave_b"] = wave_b
+    out["wave_c"] = wave_c
+    out["wave_3_proj"] = wave_3_proj
+    out["wave_5_proj"] = wave_5_proj
+    out["wave_c_proj"] = wave_c_proj
+    out["wave_state"] = wave_state
 
     return out
