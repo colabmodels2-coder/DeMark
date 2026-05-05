@@ -12,6 +12,29 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
     prev = df.iloc[-2] if len(df) > 1 else latest
     lines: list[str] = []
 
+    def _last_nonzero_event(series: pd.Series) -> tuple[int, pd.Timestamp | None, int | None]:
+        s = pd.to_numeric(series, errors="coerce").fillna(0)
+        nz = s[s > 0]
+        if nz.empty:
+            return 0, None, None
+        idx = nz.index[-1]
+        val = int(nz.iloc[-1])
+        pos = s.index.get_loc(idx)
+        if isinstance(pos, slice):
+            pos = pos.stop - 1
+        elif isinstance(pos, (list, tuple)):
+            pos = int(pos[-1])
+        bars_ago = len(s) - 1 - int(pos)
+        return val, idx, bars_ago
+
+    def _fmt_idx(idx: pd.Timestamp | None) -> str:
+        if idx is None:
+            return "n/a"
+        try:
+            return idx.strftime("%Y-%m-%d")
+        except Exception:
+            return str(idx)
+
     close = float(latest["Close"])
     buy_setup = int(latest.get("buy_setup", 0))
     sell_setup = int(latest.get("sell_setup", 0))
@@ -26,6 +49,8 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
     tdst_buy = latest.get("tdst_buy")
     tdst_sell = latest.get("tdst_sell")
     prev_close = float(prev["Close"]) if len(df) > 1 else close
+    latest_buy_cd_print, latest_buy_cd_date, latest_buy_cd_bars_ago = _last_nonzero_event(df["buy_countdown"])
+    latest_sell_cd_print, latest_sell_cd_date, latest_sell_cd_bars_ago = _last_nonzero_event(df["sell_countdown"])
 
     lines.append(f"**{symbol}** | Close: {close:,.2f}")
     lines.append("")
@@ -68,33 +93,43 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
     lines.append("")
     lines.append("### Countdown Phase (1 to 13)")
 
-    if buy_countdown > 0:
+    if latest_buy_cd_print > 0:
+        lines.append(
+            f"🟢 **Buy Countdown Sequence**: last qualified print **{latest_buy_cd_print}/13** on "
+            f"**{_fmt_idx(latest_buy_cd_date)}** ({latest_buy_cd_bars_ago} bars ago)."
+        )
+        if latest_buy_cd_bars_ago and latest_buy_cd_bars_ago > 0:
+            lines.append("   → Countdown prints can have gaps; no new print today does not automatically invalidate the sequence.")
         if deferred_buy:
             lines.append("🟢 **Buy Countdown**: 12+ (13+ Deferred)")
             lines.append("   → The sequence reached deferred status; condition for a qualified 13 is still outstanding.")
         else:
-            lines.append(f"🟢 **Buy Countdown**: {buy_countdown}/13")
-            if buy_countdown >= 10:
+            if latest_buy_cd_print >= 10:
                 lines.append("   → Late-stage Countdown. Market is in potential exhaustion territory; avoid chasing directional extension.")
-            if buy_countdown == 13:
+            if latest_buy_cd_print == 13:
                 lines.append("   → **Buy Countdown 13 complete.** Reversal risk rises, especially if price action stabilizes above downside extremes.")
                 if pd.notna(tdst_buy):
                     lines.append(f"   → Reference TDST support at {float(tdst_buy):,.2f} for structure and invalidation context.")
 
-    if sell_countdown > 0:
+    if latest_sell_cd_print > 0:
+        lines.append(
+            f"🔴 **Sell Countdown Sequence**: last qualified print **{latest_sell_cd_print}/13** on "
+            f"**{_fmt_idx(latest_sell_cd_date)}** ({latest_sell_cd_bars_ago} bars ago)."
+        )
+        if latest_sell_cd_bars_ago and latest_sell_cd_bars_ago > 0:
+            lines.append("   → Countdown prints can be non-consecutive; intervening bars may simply fail qualification.")
         if deferred_sell:
             lines.append("🔴 **Sell Countdown**: 12+ (13+ Deferred)")
             lines.append("   → The sequence reached deferred status; qualified 13 conditions remain incomplete.")
         else:
-            lines.append(f"🔴 **Sell Countdown**: {sell_countdown}/13")
-            if sell_countdown >= 10:
+            if latest_sell_cd_print >= 10:
                 lines.append("   → Late-stage Countdown. Upside extension is vulnerable to exhaustion and two-sided volatility.")
-            if sell_countdown == 13:
+            if latest_sell_cd_print == 13:
                 lines.append("   → **Sell Countdown 13 complete.** Uptrend persistence should now be questioned unless structure quickly reasserts.")
                 if pd.notna(tdst_sell):
                     lines.append(f"   → Reference TDST resistance at {float(tdst_sell):,.2f} for structural confirmation.")
 
-    if buy_countdown == 0 and sell_countdown == 0 and not deferred_buy and not deferred_sell:
+    if latest_buy_cd_print == 0 and latest_sell_cd_print == 0 and not deferred_buy and not deferred_sell:
         lines.append("No active Countdown sequence. Setup completion and follow-through criteria remain the priority.")
 
     if recycled_buy:
