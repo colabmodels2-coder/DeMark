@@ -11,6 +11,73 @@ from datetime import datetime
 warnings.filterwarnings("ignore")
 
 
+@st.cache_resource
+def _shared_ohlc_cache() -> dict[str, pd.DataFrame]:
+    # Shared across users on the same running app instance.
+    return {}
+
+
+def _period_days(period: str) -> int:
+    return {"6mo": 183, "1y": 365, "2y": 730, "5y": 1825}.get(period, 365)
+
+
+def _normalize_ohlc(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+    cols = ["Open", "High", "Low", "Close", "Volume"]
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    if any(col not in df.columns for col in cols):
+        return pd.DataFrame()
+    out = df[cols].copy()
+    if isinstance(out.index, pd.DatetimeIndex):
+        out.index = out.index.tz_localize(None)
+    out.index = pd.to_datetime(out.index, errors="coerce")
+    out = out[~out.index.isna()]
+    out = out[~out.index.duplicated(keep="last")].sort_index()
+    for col in cols:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+    out = out.dropna()
+    return out
+
+
+def _cache_get(symbol: str) -> pd.DataFrame:
+    cache = _shared_ohlc_cache()
+    return cache.get(symbol, pd.DataFrame()).copy()
+
+
+def _cache_set(symbol: str, df: pd.DataFrame) -> None:
+    if df.empty:
+        return
+    cache = _shared_ohlc_cache()
+    cache[symbol] = df.copy()
+
+
+def _merge_ohlc(old_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
+    if old_df.empty:
+        return _normalize_ohlc(new_df)
+    if new_df.empty:
+        return _normalize_ohlc(old_df)
+    merged = pd.concat([old_df, new_df], axis=0)
+    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    return _normalize_ohlc(merged)
+
+
+def _is_recent(df: pd.DataFrame) -> bool:
+    if df.empty:
+        return False
+    latest = pd.Timestamp(df.index.max()).normalize()
+    today = pd.Timestamp(datetime.now().date())
+    return latest >= (today - pd.Timedelta(days=2))
+
+
+def _has_coverage(df: pd.DataFrame, period: str) -> bool:
+    if df.empty:
+        return False
+    cutoff = pd.Timestamp(datetime.now().date()) - pd.Timedelta(days=_period_days(period))
+    return df.index.min() <= cutoff
+
+
 def _stooq_symbol(symbol: str) -> str:
     """Map supported Yahoo-style symbols to Stooq symbols."""
     mapping = {
@@ -40,7 +107,7 @@ def _stooq_symbol(symbol: str) -> str:
 
 def _filter_by_period(df: pd.DataFrame, period: str) -> pd.DataFrame:
     """Trim daily history to requested period length."""
-    days = {"6mo": 183, "1y": 365, "2y": 730, "5y": 1825}.get(period)
+    days = _period_days(period)
     if not days or df.empty:
         return df
     cutoff = pd.Timestamp(datetime.now()) - pd.Timedelta(days=days)
@@ -57,16 +124,8 @@ def _load_stooq_daily(symbol: str, period: str) -> pd.DataFrame:
 
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     df = df.dropna(subset=["Date"]).set_index("Date").sort_index()
-    required = ["Open", "High", "Low", "Close", "Volume"]
-    if any(col not in df.columns for col in required):
-        return pd.DataFrame()
-
-    df = df[required].copy()
-    for col in required:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    df = df.dropna()
-    df = _filter_by_period(df, period)
-    return df
+    df = _normalize_ohlc(df)
+    return _filter_by_period(df, period)
 
 
 def _generate_demo_ohlc(symbol: str, periods: int = 252) -> pd.DataFrame:
@@ -97,29 +156,40 @@ def load_ohlc(symbol: str, period: str = "1y", interval: str = "1d") -> pd.DataF
     # Enforce daily data only to reduce provider throttling and meet dashboard scope.
     interval = "1d"
     yahoo_error = None
+    cached = _cache_get(symbol)
+
+    # If cache is fresh and deep enough, skip external pulls.
+    if not cached.empty and _is_recent(cached) and _has_coverage(cached, period):
+        return _filter_by_period(cached, period)
 
     # Primary Yahoo path: yf.download tends to be more stable across yfinance versions.
     for attempt in range(3):
         try:
-            df = yf.download(
-                symbol,
-                period=period,
-                interval=interval,
-                auto_adjust=False,
-                progress=False,
-                threads=False,
-            )
-
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-
+            if not cached.empty:
+                # Incremental refresh over a short overlap window.
+                start_dt = (cached.index.max() - pd.Timedelta(days=14)).strftime("%Y-%m-%d")
+                df = yf.download(
+                    symbol,
+                    start=start_dt,
+                    interval=interval,
+                    auto_adjust=False,
+                    progress=False,
+                    threads=False,
+                )
+            else:
+                df = yf.download(
+                    symbol,
+                    period=period,
+                    interval=interval,
+                    auto_adjust=False,
+                    progress=False,
+                    threads=False,
+                )
+            df = _normalize_ohlc(df)
             if not df.empty:
-                cols = ["Open", "High", "Low", "Close", "Volume"]
-                df = df[cols].copy()
-                if isinstance(df.index, pd.DatetimeIndex):
-                    df.index = df.index.tz_localize(None)
-                df.dropna(inplace=True)
-                return df
+                merged = _merge_ohlc(cached, df)
+                _cache_set(symbol, merged)
+                return _filter_by_period(merged, period)
         except Exception as e:
             yahoo_error = e
             if attempt < 2:
@@ -130,15 +200,16 @@ def load_ohlc(symbol: str, period: str = "1y", interval: str = "1d") -> pd.DataF
         for attempt in range(2):
             try:
                 ticker = yf.Ticker(symbol)
-                df = ticker.history(period=period, interval=interval, auto_adjust=False)
-
+                if not cached.empty:
+                    start_dt = (cached.index.max() - pd.Timedelta(days=14)).strftime("%Y-%m-%d")
+                    df = ticker.history(start=start_dt, interval=interval, auto_adjust=False)
+                else:
+                    df = ticker.history(period=period, interval=interval, auto_adjust=False)
+                df = _normalize_ohlc(df)
                 if not df.empty:
-                    cols = ["Open", "High", "Low", "Close", "Volume"]
-                    df = df[cols].copy()
-                    if isinstance(df.index, pd.DatetimeIndex):
-                        df.index = df.index.tz_localize(None)
-                    df.dropna(inplace=True)
-                    return df
+                    merged = _merge_ohlc(cached, df)
+                    _cache_set(symbol, merged)
+                    return _filter_by_period(merged, period)
             except Exception as e:
                 yahoo_error = e
                 if attempt < 1:
@@ -148,14 +219,21 @@ def load_ohlc(symbol: str, period: str = "1y", interval: str = "1d") -> pd.DataF
     try:
         stooq_df = _load_stooq_daily(symbol, period)
         if not stooq_df.empty:
+            merged = _merge_ohlc(cached, stooq_df)
+            _cache_set(symbol, merged)
             if yahoo_error is not None:
                 st.info(
                     f"📡 Yahoo Finance is rate limited for {symbol}. "
                     f"Using Stooq daily data fallback."
                 )
-            return stooq_df
+            return _filter_by_period(merged, period)
     except Exception:
         pass
+
+    # If remote pulls fail but app has cached data, return cache.
+    if not cached.empty:
+        st.info(f"📁 Using in-app cached history for {symbol} (live pull unavailable).")
+        return _filter_by_period(cached, period)
 
     if yahoo_error is not None:
         error_msg = str(yahoo_error)[:150]
