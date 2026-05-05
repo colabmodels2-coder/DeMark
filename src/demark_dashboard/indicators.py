@@ -238,10 +238,20 @@ def _countdowns(
         if i < 2:
             continue
 
+        # Opposite-direction Setup 9 cancels existing background trackers.
+        if buy_setup.iloc[i] == 9 and sell_trackers:
+            sell_trackers = []
+        if sell_setup.iloc[i] == 9 and buy_trackers:
+            buy_trackers = []
+
         # Start a new background tracker on every Setup 9.
         if buy_setup.iloc[i] == 9:
+            if any(not t["done"] for t in buy_trackers):
+                recycled_buy.iloc[i] = True
             buy_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
         if sell_setup.iloc[i] == 9:
+            if any(not t["done"] for t in sell_trackers):
+                recycled_sell.iloc[i] = True
             sell_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
 
         buy_events: list[tuple[int | None, bool]] = []
