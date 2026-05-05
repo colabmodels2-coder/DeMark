@@ -16,41 +16,71 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
         s = pd.to_numeric(series, errors="coerce").fillna(0)
         nz_indices = s[s > 0].index
         if len(nz_indices) == 0:
-            return 0, 0
-        last_idx_pos = s.index.get_loc(nz_indices[-1])
-        if isinstance(last_idx_pos, slice):
-            last_idx_pos = last_idx_pos.stop - 1
-        elif isinstance(last_idx_pos, (list, tuple)):
-            last_idx_pos = last_idx_pos[-1]
-        bars_ago = len(s) - 1 - last_idx_pos
-        return int(s.iloc[-1 - bars_ago]), bars_ago
+            return 0, -1
+        last_label = nz_indices[-1]
+        pos = s.index.get_loc(last_label)
+        if isinstance(pos, slice):
+            pos = pos.stop - 1
+        elif isinstance(pos, (list, tuple)):
+            pos = int(pos[-1])
+        bars_ago = len(s) - 1 - int(pos)
+        return int(s.iloc[int(pos)]), bars_ago
 
+    def _last_pos_of_value(series: pd.Series, value) -> int:
+        """Return integer position of last occurrence of value, or -1."""
+        s = pd.to_numeric(series, errors="coerce").fillna(0)
+        matches = s[s == value].index
+        if len(matches) == 0:
+            return -1
+        label = matches[-1]
+        pos = s.index.get_loc(label)
+        if isinstance(pos, slice):
+            return pos.stop - 1
+        elif isinstance(pos, (list, tuple)):
+            return int(pos[-1])
+        return int(pos)
+
+    n = len(df)
     close = float(latest["Close"])
-    
-    # Current setup state (latest row)
+
+    # Current setup state (latest row only — setups only print on qualifying bars)
     buy_setup = int(latest.get("buy_setup", 0))
     sell_setup = int(latest.get("sell_setup", 0))
     buy_perfected = bool(latest.get("buy_perfected", False))
     sell_perfected = bool(latest.get("sell_perfected", False))
-    
-    # Last nonzero countdown values (most recent print, may be several bars ago)
-    last_buy_cd, buy_cd_bars_ago = _last_nonzero(df["buy_countdown"])
-    last_sell_cd, sell_cd_bars_ago = _last_nonzero(df["sell_countdown"])
-    
+
     # Deferred/Recycled flags (from latest row)
     deferred_buy = bool(latest.get("deferred_buy", False))
     deferred_sell = bool(latest.get("deferred_sell", False))
     recycled_buy = bool(latest.get("recycled_buy", False))
     recycled_sell = bool(latest.get("recycled_sell", False))
-    
+
     # TDST levels
     tdst_buy = latest.get("tdst_buy")
     tdst_sell = latest.get("tdst_sell")
 
-    # Determine ACTIVE countdown direction (mutual exclusivity: only one is active)
-    # Active = last nonzero > 0 OR deferred state is true
-    has_buy_cd = (last_buy_cd > 0) or deferred_buy
-    has_sell_cd = (last_sell_cd > 0) or deferred_sell
+    # -----------------------------------------------------------------------
+    # Determine which countdown is CURRENTLY ACTIVE
+    #
+    # A buy countdown is cancelled when a SELL setup 9 completes. So:
+    #   buy countdown is active  iff  last buy_countdown print > 0
+    #                                 AND no sell setup 9 occurred after that print
+    # -----------------------------------------------------------------------
+    last_buy_cd, buy_cd_bars_ago   = _last_nonzero(df["buy_countdown"])
+    last_sell_cd, sell_cd_bars_ago = _last_nonzero(df["sell_countdown"])
+
+    buy_cd_pos  = -1 if buy_cd_bars_ago  < 0 else (n - 1 - buy_cd_bars_ago)
+    sell_cd_pos = -1 if sell_cd_bars_ago < 0 else (n - 1 - sell_cd_bars_ago)
+
+    last_buy_s9_pos  = _last_pos_of_value(df["buy_setup"],  9)
+    last_sell_s9_pos = _last_pos_of_value(df["sell_setup"], 9)
+
+    # Buy countdown is active if it has prints AND no sell setup 9 occurred after the last print
+    buy_cd_cancelled  = (last_sell_s9_pos > buy_cd_pos)
+    sell_cd_cancelled = (last_buy_s9_pos  > sell_cd_pos)
+
+    has_buy_cd  = (last_buy_cd  > 0 or deferred_buy)  and not buy_cd_cancelled
+    has_sell_cd = (last_sell_cd > 0 or deferred_sell) and not sell_cd_cancelled
 
     # =========================================================================
     # SETUP PHASE STATUS
