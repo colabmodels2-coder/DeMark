@@ -123,14 +123,25 @@ def _countdowns(
     df: pd.DataFrame,
     buy_setup: pd.Series,
     sell_setup: pd.Series,
-) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]:
+) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]:
     """
     TD Countdown: 13 bars comparing close to low/high 2 bars earlier.
     Buy Countdown: 13 closes <= low[2 bars ago]
     Sell Countdown: 13 closes >= high[2 bars ago]
     MUTUAL EXCLUSIVITY: Only one active countdown direction at a time.
     When opposite-direction Setup 9 completes, it cancels the prior countdown.
-    Returns: buy_countdown, sell_countdown, deferred_buy (+), deferred_sell (+), recycled_buy (R), recycled_sell (R)
+
+    Deferred (13+): bar 13 condition (close <= low[2]) is met but low[13] > close[8].
+      Per book, countdown remains ACTIVE in awaiting state until a bar satisfies BOTH:
+        low <= close[8]  AND  close <= low[2]   (buy)
+        high >= close[8] AND  close >= high[2]  (sell)
+
+    Returns:
+      buy_countdown, sell_countdown,
+      deferred_buy (+), deferred_sell (+),
+      recycled_buy (R), recycled_sell (R),
+      buy_countdown_active, sell_countdown_active,   <- True on every bar countdown is running
+      buy_deferred_active, sell_deferred_active      <- True on every bar in deferred/awaiting state
     """
     close = df["Close"]
     low = df["Low"]
@@ -142,50 +153,67 @@ def _countdowns(
     deferred_sell = pd.Series(False, index=df.index)
     recycled_buy = pd.Series(False, index=df.index)
     recycled_sell = pd.Series(False, index=df.index)
+    buy_countdown_active = pd.Series(False, index=df.index)
+    sell_countdown_active = pd.Series(False, index=df.index)
+    buy_deferred_active = pd.Series(False, index=df.index)
+    sell_deferred_active = pd.Series(False, index=df.index)
 
     active_buy = False
     active_sell = False
     bcount = 0
     scount = 0
-    buy_cd8_close = np.nan  # Bar 8 reference uses CLOSE, not Low
-    sell_cd8_close = np.nan  # Bar 8 reference uses CLOSE, not High
+    buy_cd8_close = np.nan   # Book rule: save CLOSE of bar 8, not Low
+    sell_cd8_close = np.nan  # Book rule: save CLOSE of bar 8, not High
+    buy_awaiting_13 = False  # True after deferred 13: countdown persists looking for qualifying bar 13
+    sell_awaiting_13 = False
 
     for i in range(len(df)):
         if i < 2:
             continue
 
-        # CRITICAL: When opposite-direction Setup 9 completes, FORCE switch and cancel prior countdown
-        # This must be checked BEFORE recycle logic
+        # ------------------------------------------------------------------
+        # MUTUAL EXCLUSIVITY: Opposite Setup 9 immediately cancels prior countdown
+        # Checked BEFORE recycle so cancellation takes priority
+        # ------------------------------------------------------------------
         if buy_setup.iloc[i] == 9 and active_sell:
-            # Buy setup completed while sell countdown active: cancel sell, activate buy
             active_sell = False
             active_buy = True
             bcount = 0
             scount = 0
             buy_cd8_close = np.nan
             sell_cd8_close = np.nan
+            buy_awaiting_13 = False
+            sell_awaiting_13 = False
 
         if sell_setup.iloc[i] == 9 and active_buy:
-            # Sell setup completed while buy countdown active: cancel buy, activate sell
             active_buy = False
             active_sell = True
             scount = 0
             bcount = 0
             sell_cd8_close = np.nan
             buy_cd8_close = np.nan
+            buy_awaiting_13 = False
+            sell_awaiting_13 = False
 
-        # Recycle: a new same-direction Setup 9 before Countdown 13 completion restarts the countdown.
-        if active_buy and 0 < bcount < 13 and buy_setup.iloc[i] == 9:
+        # ------------------------------------------------------------------
+        # RECYCLE: Same-direction Setup 9 before bar 13 completion resets count
+        # This includes the awaiting/deferred state (bcount=12, awaiting_13=True)
+        # ------------------------------------------------------------------
+        if active_buy and 0 < bcount <= 12 and buy_setup.iloc[i] == 9:
             recycled_buy.iloc[i] = True
             bcount = 0
             buy_cd8_close = np.nan
+            buy_awaiting_13 = False
 
-        if active_sell and 0 < scount < 13 and sell_setup.iloc[i] == 9:
+        if active_sell and 0 < scount <= 12 and sell_setup.iloc[i] == 9:
             recycled_sell.iloc[i] = True
             scount = 0
             sell_cd8_close = np.nan
+            sell_awaiting_13 = False
 
-        # Initiate countdown when Setup 9 completes and not already active
+        # ------------------------------------------------------------------
+        # INITIATE: Start countdown when Setup 9 completes and not already active
+        # ------------------------------------------------------------------
         if buy_setup.iloc[i] == 9 and not active_buy:
             active_buy = True
             bcount = 0
@@ -196,59 +224,86 @@ def _countdowns(
             scount = 0
             sell_cd8_close = np.nan
 
-        # Process buy countdown (only if active and sell not active)
+        # ------------------------------------------------------------------
+        # Record active state BEFORE processing (so bar 0 before first print is also captured)
+        # ------------------------------------------------------------------
+        buy_countdown_active.iloc[i] = active_buy
+        sell_countdown_active.iloc[i] = active_sell
+        buy_deferred_active.iloc[i] = buy_awaiting_13
+        sell_deferred_active.iloc[i] = sell_awaiting_13
+
+        # ------------------------------------------------------------------
+        # BUY COUNTDOWN (only when active and sell not active)
+        # ------------------------------------------------------------------
         if active_buy and not active_sell:
-            if close.iloc[i] <= low.iloc[i - 2]:
-                bcount += 1
-                if bcount <= 13:
+            if buy_awaiting_13:
+                # Deferred/awaiting state: countdown reached bar 13 (close <= low[2]) but
+                # low[13] > close[8] failed. Now wait for BOTH conditions simultaneously.
+                if close.iloc[i] <= low.iloc[i - 2]:
+                    if low.iloc[i] <= buy_cd8_close:
+                        # Both conditions now satisfied: countdown 13 complete
+                        buy_countdown.iloc[i] = 13
+                        active_buy = False
+                        buy_awaiting_13 = False
+                    else:
+                        # Close condition met but low still > close[8]: mark deferred again
+                        deferred_buy.iloc[i] = True
+                # else: close > low[2], neither condition met — continue waiting silently
+            else:
+                # Normal countdown: count bars where close <= low[2 bars ago]
+                if close.iloc[i] <= low.iloc[i - 2]:
+                    bcount += 1
                     buy_countdown.iloc[i] = bcount
                     if bcount == 8:
-                        buy_cd8_close = close.iloc[i]  # BOOK RULE: Save Close[8], not Low[8]
+                        buy_cd8_close = close.iloc[i]  # Book rule: save Close[8]
                     elif bcount == 13:
-                        # Check completion conditions per book:
-                        # 1. Low[13] <= Close[8]
-                        # 2. Close[13] <= Low[2]
-                        if low.iloc[i] <= buy_cd8_close and close.iloc[i] <= low.iloc[i - 2]:
-                            buy_countdown.iloc[i] = 13
+                        if low.iloc[i] <= buy_cd8_close:
+                            # Both conditions met: complete
+                            pass  # buy_countdown already set to 13 above
                         else:
+                            # Close condition met but low[13] > close[8]: enter deferred state
+                            buy_countdown.iloc[i] = 0  # Clear — not a completed 13
                             deferred_buy.iloc[i] = True
-                            bcount = 12  # Stays at 12 with + marker
-                            active_buy = False
-                if bcount > 13:
-                    active_buy = False
-            else:
-                if bcount > 0 and bcount < 13:
-                    pass  # Countdown pauses but doesn't reset
-                elif bcount == 0:
-                    active_buy = False
+                            bcount = 12        # Hold at 12 (awaiting bar 13 completion)
+                            buy_awaiting_13 = True  # Countdown continues in awaiting state
+                # else: close > low[2] — countdown pauses on this bar (no action, preserves bcount)
+                # Note: bcount == 0 pause is intentional — countdown waits for first qualifying bar
 
-        # Process sell countdown (only if active and buy not active)
+        # ------------------------------------------------------------------
+        # SELL COUNTDOWN (only when active and buy not active)
+        # ------------------------------------------------------------------
         if active_sell and not active_buy:
-            if close.iloc[i] >= high.iloc[i - 2]:
-                scount += 1
-                if scount <= 13:
+            if sell_awaiting_13:
+                if close.iloc[i] >= high.iloc[i - 2]:
+                    if high.iloc[i] >= sell_cd8_close:
+                        # Both conditions satisfied: countdown 13 complete
+                        sell_countdown.iloc[i] = 13
+                        active_sell = False
+                        sell_awaiting_13 = False
+                    else:
+                        deferred_sell.iloc[i] = True
+            else:
+                if close.iloc[i] >= high.iloc[i - 2]:
+                    scount += 1
                     sell_countdown.iloc[i] = scount
                     if scount == 8:
-                        sell_cd8_close = close.iloc[i]  # BOOK RULE: Save Close[8], not High[8]
+                        sell_cd8_close = close.iloc[i]  # Book rule: save Close[8]
                     elif scount == 13:
-                        # Check completion conditions per book:
-                        # 1. High[13] >= Close[8]
-                        # 2. Close[13] >= High[2]
-                        if high.iloc[i] >= sell_cd8_close and close.iloc[i] >= high.iloc[i - 2]:
-                            sell_countdown.iloc[i] = 13
+                        if high.iloc[i] >= sell_cd8_close:
+                            pass  # sell_countdown already set to 13 above
                         else:
+                            sell_countdown.iloc[i] = 0  # Clear — not a completed 13
                             deferred_sell.iloc[i] = True
-                            scount = 12  # Stays at 12 with + marker
-                            active_sell = False
-                if scount > 13:
-                    active_sell = False
-            else:
-                if scount > 0 and scount < 13:
-                    pass  # Countdown pauses but doesn't reset
-                elif scount == 0:
-                    active_sell = False
+                            scount = 12
+                            sell_awaiting_13 = True
 
-    return buy_countdown, sell_countdown, deferred_buy, deferred_sell, recycled_buy, recycled_sell
+    return (
+        buy_countdown, sell_countdown,
+        deferred_buy, deferred_sell,
+        recycled_buy, recycled_sell,
+        buy_countdown_active, sell_countdown_active,
+        buy_deferred_active, sell_deferred_active,
+    )
 
 
 def _tdst_levels(df: pd.DataFrame, buy_setup: pd.Series, sell_setup: pd.Series) -> tuple[pd.Series, pd.Series]:
@@ -294,17 +349,23 @@ def apply_demark(df: pd.DataFrame) -> pd.DataFrame:
     out["sell_perfected"] = sell_perfected
 
     # Countdown counts
-    buy_countdown, sell_countdown, deferred_buy, deferred_sell, recycled_buy, recycled_sell = _countdowns(
-        out,
-        buy_setup,
-        sell_setup,
-    )
+    (
+        buy_countdown, sell_countdown,
+        deferred_buy, deferred_sell,
+        recycled_buy, recycled_sell,
+        buy_countdown_active, sell_countdown_active,
+        buy_deferred_active, sell_deferred_active,
+    ) = _countdowns(out, buy_setup, sell_setup)
     out["buy_countdown"] = buy_countdown
     out["sell_countdown"] = sell_countdown
     out["deferred_buy"] = deferred_buy
     out["deferred_sell"] = deferred_sell
     out["recycled_buy"] = recycled_buy
     out["recycled_sell"] = recycled_sell
+    out["buy_countdown_active"] = buy_countdown_active
+    out["sell_countdown_active"] = sell_countdown_active
+    out["buy_deferred_active"] = buy_deferred_active
+    out["sell_deferred_active"] = sell_deferred_active
 
     # TDST levels
     tdst_buy, tdst_sell = _tdst_levels(out, buy_setup, sell_setup)
