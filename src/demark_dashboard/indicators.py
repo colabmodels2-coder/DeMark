@@ -5,42 +5,41 @@ import pandas as pd
 
 
 def _true_range(df: pd.DataFrame) -> pd.Series:
-    """Calculate true range: max(high - low, abs(high - prev_close), abs(low - prev_close))"""
+    """True range = max(high-low, abs(high-prev_close), abs(low-prev_close))."""
     high = df["High"]
     low = df["Low"]
     prev_close = df["Close"].shift(1)
-    tr = pd.concat([
-        high - low,
-        (high - prev_close).abs(),
-        (low - prev_close).abs()
-    ], axis=1).max(axis=1)
+    tr = pd.concat(
+        [
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
     return tr
 
 
 def _price_flips(close: pd.Series) -> tuple[pd.Series, pd.Series]:
     """
-    Bearish TD Price Flip: Close > Close[4 bars ago], then Close < Close[4 bars ago]
-    Bullish TD Price Flip: Close < Close[4 bars ago], then Close > Close[4 bars ago]
+    Bearish TD Price Flip: Close > Close[4], then immediate Close < Close[4]
+    Bullish TD Price Flip: Close < Close[4], then immediate Close > Close[4]
     """
     shifted_4 = close.shift(4)
     prev_close = close.shift(1)
     prev_shifted_4 = close.shift(5)
 
-    # Strict flip definition per book language:
-    # bullish: prior bar was strictly below close[4], current bar strictly above close[4]
-    # bearish: prior bar was strictly above close[4], current bar strictly below close[4]
     bullish_flip = (close > shifted_4) & (prev_close < prev_shifted_4)
     bearish_flip = (close < shifted_4) & (prev_close > prev_shifted_4)
     return bullish_flip.fillna(False), bearish_flip.fillna(False)
 
 
-def _setup_counts(df: pd.DataFrame, bullish_flip: pd.Series, bearish_flip: pd.Series) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
-    """
-    TD Setup: 9 consecutive closes with correct relationship to close 4 bars earlier.
-    Buy Setup: 9 closes < close[4 bars ago]
-    Sell Setup: 9 closes > close[4 bars ago]
-    Perfection: Low/High of bar 8-9 more extreme than bars 6-7
-    """
+def _setup_counts(
+    df: pd.DataFrame,
+    bullish_flip: pd.Series,
+    bearish_flip: pd.Series,
+) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
+    """Compute buy/sell setups (1-9) and deferred perfection states."""
     close = df["Close"]
     high = df["High"]
     low = df["Low"]
@@ -54,32 +53,25 @@ def _setup_counts(df: pd.DataFrame, bullish_flip: pd.Series, bearish_flip: pd.Se
     sell_active = False
     bcount = 0
     scount = 0
-    buy_start_idx = 0
-    sell_start_idx = 0
 
     for i in range(len(df)):
         if i < 5:
             continue
 
-        # Start buy setup on bearish flip
         if bearish_flip.iloc[i]:
             buy_active = True
             sell_active = False
             bcount = 1
-            buy_start_idx = i
             buy_setup.iloc[i] = 1
             continue
 
-        # Start sell setup on bullish flip
         if bullish_flip.iloc[i]:
             sell_active = True
             buy_active = False
             scount = 1
-            sell_start_idx = i
             sell_setup.iloc[i] = 1
             continue
 
-        # Continue or reset buy setup
         if buy_active:
             if close.iloc[i] < close.iloc[i - 4]:
                 bcount += 1
@@ -90,7 +82,6 @@ def _setup_counts(df: pd.DataFrame, bullish_flip: pd.Series, bearish_flip: pd.Se
                 buy_active = False
                 bcount = 0
 
-        # Continue or reset sell setup
         if sell_active:
             if close.iloc[i] > close.iloc[i - 4]:
                 scount += 1
@@ -101,9 +92,8 @@ def _setup_counts(df: pd.DataFrame, bullish_flip: pd.Series, bearish_flip: pd.Se
                 sell_active = False
                 scount = 0
 
-    # Perfection can be deferred beyond setup bar 9.
-    pending_buy_level = np.nan   # threshold = min(Low6, Low7) from most recent buy setup 9
-    pending_sell_level = np.nan  # threshold = max(High6, High7) from most recent sell setup 9
+    pending_buy_level = np.nan
+    pending_sell_level = np.nan
     buy_pending = False
     sell_pending = False
 
@@ -111,7 +101,6 @@ def _setup_counts(df: pd.DataFrame, bullish_flip: pd.Series, bearish_flip: pd.Se
         if buy_setup.iloc[i] == 9 and i >= 8:
             pending_buy_level = min(low.iloc[i - 3], low.iloc[i - 2])
             buy_pending = True
-            # Immediate perfection on bar 9 if bar 8 or 9 satisfies level.
             if min(low.iloc[i - 1], low.iloc[i]) <= pending_buy_level:
                 buy_perfected.iloc[i] = True
                 buy_pending = False
@@ -119,12 +108,10 @@ def _setup_counts(df: pd.DataFrame, bullish_flip: pd.Series, bearish_flip: pd.Se
         if sell_setup.iloc[i] == 9 and i >= 8:
             pending_sell_level = max(high.iloc[i - 3], high.iloc[i - 2])
             sell_pending = True
-            # Immediate perfection on bar 9 if bar 8 or 9 satisfies level.
             if max(high.iloc[i - 1], high.iloc[i]) >= pending_sell_level:
                 sell_perfected.iloc[i] = True
                 sell_pending = False
 
-        # Deferred perfection after setup 9.
         if buy_pending and low.iloc[i] <= pending_buy_level:
             buy_perfected.iloc[i] = True
             buy_pending = False
@@ -133,7 +120,6 @@ def _setup_counts(df: pd.DataFrame, bullish_flip: pd.Series, bearish_flip: pd.Se
             sell_perfected.iloc[i] = True
             sell_pending = False
 
-        # New opposite completed setup invalidates pending perfection context.
         if buy_setup.iloc[i] == 9:
             sell_pending = False
         if sell_setup.iloc[i] == 9:
@@ -147,7 +133,7 @@ def _setup_extensions(
     bullish_flip: pd.Series,
     bearish_flip: pd.Series,
 ) -> tuple[pd.Series, pd.Series]:
-    """Internal Setup counts that continue beyond 9 for recycle qualification."""
+    """Internal setup counts that continue beyond 9 until extinguished by opposite flip."""
     close = df["Close"]
     buy_ext = pd.Series(0, index=df.index, dtype="int64")
     sell_ext = pd.Series(0, index=df.index, dtype="int64")
@@ -205,28 +191,7 @@ def _countdowns(
     tdst_buy: pd.Series,
     tdst_sell: pd.Series,
 ) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]:
-    """
-        TD Countdown: 13 bars comparing close to low/high 2 bars earlier.
-        Buy Countdown: 13 closes <= low[2 bars ago]
-        Sell Countdown: 13 closes >= high[2 bars ago]
-
-        This implementation supports concurrent hidden countdowns per direction.
-        Multiple countdown candidates can run in the background, but only the
-        countdown closest to completion is displayed on the chart for that bar.
-
-        Deferred (13+): bar 13 close condition is met but bar-13 extreme vs close[8]
-        fails. Countdown remains in awaiting state until both conditions are met.
-
-        Recycle (R): if a same-direction Setup extends to 18 bars while the
-        countdown is still incomplete, that countdown is recycled.
-
-        Returns:
-            buy_countdown, sell_countdown,
-            deferred_buy (+), deferred_sell (+),
-            recycled_buy (R), recycled_sell (R),
-            buy_countdown_active, sell_countdown_active,
-            buy_deferred_active, sell_deferred_active
-    """
+    """TD Countdown engine with cancellation, recycle, and qualifier logic."""
     close = df["Close"]
     low = df["Low"]
     high = df["High"]
@@ -244,73 +209,17 @@ def _countdowns(
 
     buy_trackers: list[dict] = []
     sell_trackers: list[dict] = []
+
     RECYCLE_SETUP_EXTENSION = 18
     PHI = 1.618
+    ALLOW_OVERLAP_WHEN_AWAITING_13 = True
 
-    # Track setup-range contexts to evaluate Cancellation Qualifier I/II.
     buy_setup_ctxs: list[dict] = []
     sell_setup_ctxs: list[dict] = []
-
     buy_curr_ctx: dict | None = None
     sell_curr_ctx: dict | None = None
     last_buy_setup9_idx: int | None = None
     last_sell_setup9_idx: int | None = None
-
-    def _new_setup_ctx(i: int) -> dict:
-        return {
-            "start": i,
-            "end": i,
-            "true_high": true_high,
-            "true_low": true_low,
-            "close_high": float(close.iloc[i]),
-            "close_low": float(close.iloc[i]),
-            "completed9": False,
-        }
-
-    def _update_setup_ctx(ctx: dict, i: int) -> None:
-        ctx["end"] = i
-        ctx["true_high"] = max(float(ctx["true_high"]), true_high)
-        ctx["true_low"] = min(float(ctx["true_low"]), true_low)
-        c = float(close.iloc[i])
-        ctx["close_high"] = max(float(ctx["close_high"]), c)
-        ctx["close_low"] = min(float(ctx["close_low"]), c)
-
-    def _ctx_range(ctx: dict) -> float:
-        return float(ctx["true_high"]) - float(ctx["true_low"])
-
-    def _within(outer_low: float, outer_high: float, inner_low: float, inner_high: float) -> bool:
-        return inner_low >= outer_low and inner_high <= outer_high
-
-    def _evaluate_qualifiers(prev_ctx: dict, curr_ctx: dict) -> tuple[bool, bool]:
-        """
-        Return (qualifier_i, qualifier_ii).
-
-        Qualifier I:
-          curr_range >= prev_range and curr_range < 1.618 * prev_range
-        Qualifier II (setup within setup):
-          curr closing range and curr true range are both within prior true range.
-        """
-        prev_range = _ctx_range(prev_ctx)
-        curr_range = _ctx_range(curr_ctx)
-        qualifier_i = prev_range > 0 and (curr_range >= prev_range) and (curr_range < PHI * prev_range)
-        qualifier_ii = _within(
-            float(prev_ctx["true_low"]),
-            float(prev_ctx["true_high"]),
-            float(curr_ctx["close_low"]),
-            float(curr_ctx["close_high"]),
-        ) and _within(
-            float(prev_ctx["true_low"]),
-            float(prev_ctx["true_high"]),
-            float(curr_ctx["true_low"]),
-            float(curr_ctx["true_high"]),
-        )
-        return qualifier_i, qualifier_ii
-
-    # Gating policy for hidden same-direction trackers:
-    # Avoid spawning unlimited overlapping countdowns (which can overproduce 13s),
-    # but still allow limited overlap when the currently displayed tracker is very
-    # close to completion (awaiting/deferred 13).
-    ALLOW_OVERLAP_WHEN_AWAITING_13 = True
 
     def _progress_score(tracker: dict) -> float:
         if tracker["done"]:
@@ -326,6 +235,48 @@ def _countdowns(
         if ALLOW_OVERLAP_WHEN_AWAITING_13 and any(t["awaiting_13"] for t in active):
             return True
         return False
+
+    def _new_setup_ctx(i: int, true_low_value: float, true_high_value: float) -> dict:
+        c = float(close.iloc[i])
+        return {
+            "start": i,
+            "end": i,
+            "true_high": true_high_value,
+            "true_low": true_low_value,
+            "close_high": c,
+            "close_low": c,
+        }
+
+    def _update_setup_ctx(ctx: dict, i: int, true_low_value: float, true_high_value: float) -> None:
+        ctx["end"] = i
+        ctx["true_high"] = max(float(ctx["true_high"]), true_high_value)
+        ctx["true_low"] = min(float(ctx["true_low"]), true_low_value)
+        c = float(close.iloc[i])
+        ctx["close_high"] = max(float(ctx["close_high"]), c)
+        ctx["close_low"] = min(float(ctx["close_low"]), c)
+
+    def _ctx_range(ctx: dict) -> float:
+        return float(ctx["true_high"]) - float(ctx["true_low"])
+
+    def _within(outer_low: float, outer_high: float, inner_low: float, inner_high: float) -> bool:
+        return inner_low >= outer_low and inner_high <= outer_high
+
+    def _evaluate_qualifiers(prev_ctx: dict, curr_ctx: dict) -> tuple[bool, bool]:
+        prev_range = _ctx_range(prev_ctx)
+        curr_range = _ctx_range(curr_ctx)
+        qualifier_i = prev_range > 0 and (curr_range >= prev_range) and (curr_range < PHI * prev_range)
+        qualifier_ii = _within(
+            float(prev_ctx["true_low"]),
+            float(prev_ctx["true_high"]),
+            float(curr_ctx["close_low"]),
+            float(curr_ctx["close_high"]),
+        ) and _within(
+            float(prev_ctx["true_low"]),
+            float(prev_ctx["true_high"]),
+            float(curr_ctx["true_low"]),
+            float(curr_ctx["true_high"]),
+        )
+        return qualifier_i, qualifier_ii
 
     def _update_buy_tracker(tracker: dict, i: int) -> tuple[int | None, bool]:
         printed_value: int | None = None
@@ -400,29 +351,25 @@ def _countdowns(
         true_low = min(float(low.iloc[i]), float(close.iloc[i - 1]))
         true_high = max(float(high.iloc[i]), float(close.iloc[i - 1]))
 
-        # Maintain setup context ranges (including extension beyond 9 until extinguished).
         if buy_setup_ext.iloc[i] == 1:
-            buy_curr_ctx = _new_setup_ctx(i)
+            buy_curr_ctx = _new_setup_ctx(i, true_low, true_high)
         elif buy_setup_ext.iloc[i] > 1 and buy_curr_ctx is not None:
-            _update_setup_ctx(buy_curr_ctx, i)
-        elif buy_setup_ext.iloc[i] == 0 and buy_curr_ctx is not None:
+            _update_setup_ctx(buy_curr_ctx, i, true_low, true_high)
+        elif buy_setup_ext.iloc[i] == 0:
             buy_curr_ctx = None
 
         if sell_setup_ext.iloc[i] == 1:
-            sell_curr_ctx = _new_setup_ctx(i)
+            sell_curr_ctx = _new_setup_ctx(i, true_low, true_high)
         elif sell_setup_ext.iloc[i] > 1 and sell_curr_ctx is not None:
-            _update_setup_ctx(sell_curr_ctx, i)
-        elif sell_setup_ext.iloc[i] == 0 and sell_curr_ctx is not None:
+            _update_setup_ctx(sell_curr_ctx, i, true_low, true_high)
+        elif sell_setup_ext.iloc[i] == 0:
             sell_curr_ctx = None
 
-        # TDST cancellation of incomplete countdowns.
         if buy_trackers and pd.notna(tdst_buy.iloc[i]) and true_low > float(tdst_buy.iloc[i]):
             buy_trackers = []
         if sell_trackers and pd.notna(tdst_sell.iloc[i]) and true_high < float(tdst_sell.iloc[i]):
             sell_trackers = []
 
-        # Recycle qualifier from TD Sequential: if a same-direction Setup extends
-        # to 18 while countdown is still developing, recycle that countdown.
         if buy_trackers and buy_setup_ext.iloc[i] >= RECYCLE_SETUP_EXTENSION:
             buy_trackers = []
             recycled_buy.iloc[i] = True
@@ -430,112 +377,88 @@ def _countdowns(
             sell_trackers = []
             recycled_sell.iloc[i] = True
 
-        # Opposite-direction Setup 9 cancels existing background trackers.
         if buy_setup.iloc[i] == 9 and sell_trackers:
             sell_trackers = []
         if sell_setup.iloc[i] == 9 and buy_trackers:
             buy_trackers = []
 
-        # Start/evaluate same-direction setup interactions on Setup 9.
         if buy_setup.iloc[i] == 9:
+            qualifier_i = False
+            qualifier_ii = False
             if buy_curr_ctx is not None:
-                buy_curr_ctx["completed9"] = True
                 buy_setup_ctxs.append(buy_curr_ctx.copy())
-                curr_ctx = buy_setup_ctxs[-1]
-                prev_ctx = buy_setup_ctxs[-2] if len(buy_setup_ctxs) >= 2 else None
+                if len(buy_setup_ctxs) >= 2 and (last_sell_setup9_idx is None or last_sell_setup9_idx < int(buy_curr_ctx["start"])):
+                    qualifier_i, qualifier_ii = _evaluate_qualifiers(buy_setup_ctxs[-2], buy_setup_ctxs[-1])
 
-                qualifier_i = False
-                qualifier_ii = False
-                if prev_ctx is not None and (last_sell_setup9_idx is None or last_sell_setup9_idx < int(curr_ctx["start"])):
-                    qualifier_i, qualifier_ii = _evaluate_qualifiers(prev_ctx, curr_ctx)
+            if qualifier_i and buy_trackers:
+                buy_trackers = []
+                recycled_buy.iloc[i] = True
 
-                if qualifier_i and buy_trackers:
-                    buy_trackers = []
-                    recycled_buy.iloc[i] = True
+            if not qualifier_ii and _can_spawn_same_direction_tracker(buy_trackers):
+                buy_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
 
-                if not qualifier_ii and _can_spawn_same_direction_tracker(buy_trackers):
-                    buy_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
-            else:
-                if _can_spawn_same_direction_tracker(buy_trackers):
-                    buy_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
             last_buy_setup9_idx = i
 
         if sell_setup.iloc[i] == 9:
+            qualifier_i = False
+            qualifier_ii = False
             if sell_curr_ctx is not None:
-                sell_curr_ctx["completed9"] = True
                 sell_setup_ctxs.append(sell_curr_ctx.copy())
-                curr_ctx = sell_setup_ctxs[-1]
-                prev_ctx = sell_setup_ctxs[-2] if len(sell_setup_ctxs) >= 2 else None
+                if len(sell_setup_ctxs) >= 2 and (last_buy_setup9_idx is None or last_buy_setup9_idx < int(sell_curr_ctx["start"])):
+                    qualifier_i, qualifier_ii = _evaluate_qualifiers(sell_setup_ctxs[-2], sell_setup_ctxs[-1])
 
-                qualifier_i = False
-                qualifier_ii = False
-                if prev_ctx is not None and (last_buy_setup9_idx is None or last_buy_setup9_idx < int(curr_ctx["start"])):
-                    qualifier_i, qualifier_ii = _evaluate_qualifiers(prev_ctx, curr_ctx)
+            if qualifier_i and sell_trackers:
+                sell_trackers = []
+                recycled_sell.iloc[i] = True
 
-                if qualifier_i and sell_trackers:
-                    sell_trackers = []
-                    recycled_sell.iloc[i] = True
+            if not qualifier_ii and _can_spawn_same_direction_tracker(sell_trackers):
+                sell_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
 
-                if not qualifier_ii and _can_spawn_same_direction_tracker(sell_trackers):
-                    sell_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
-            else:
-                if _can_spawn_same_direction_tracker(sell_trackers):
-                    sell_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
             last_sell_setup9_idx = i
 
-        buy_events: list[tuple[int | None, bool]] = []
-        for tracker in buy_trackers:
-            buy_events.append(_update_buy_tracker(tracker, i))
+        buy_events = [_update_buy_tracker(t, i) for t in buy_trackers]
+        sell_events = [_update_sell_tracker(t, i) for t in sell_trackers]
 
-        sell_events: list[tuple[int | None, bool]] = []
-        for tracker in sell_trackers:
-            sell_events.append(_update_sell_tracker(tracker, i))
-
-        # Display only the tracker closest to completion for each direction.
         if buy_trackers:
-            buy_best_idx = max(range(len(buy_trackers)), key=lambda k: _progress_score(buy_trackers[k]))
-            buy_print, buy_deferred = buy_events[buy_best_idx]
+            best = max(range(len(buy_trackers)), key=lambda k: _progress_score(buy_trackers[k]))
+            buy_print, buy_def = buy_events[best]
             if buy_print is not None:
                 buy_countdown.iloc[i] = int(buy_print)
-            if buy_deferred:
+            if buy_def:
                 deferred_buy.iloc[i] = True
-            buy_deferred_active.iloc[i] = bool(buy_trackers[buy_best_idx]["awaiting_13"])
+            buy_deferred_active.iloc[i] = bool(buy_trackers[best]["awaiting_13"])
 
         if sell_trackers:
-            sell_best_idx = max(range(len(sell_trackers)), key=lambda k: _progress_score(sell_trackers[k]))
-            sell_print, sell_deferred = sell_events[sell_best_idx]
+            best = max(range(len(sell_trackers)), key=lambda k: _progress_score(sell_trackers[k]))
+            sell_print, sell_def = sell_events[best]
             if sell_print is not None:
                 sell_countdown.iloc[i] = int(sell_print)
-            if sell_deferred:
+            if sell_def:
                 deferred_sell.iloc[i] = True
-            sell_deferred_active.iloc[i] = bool(sell_trackers[sell_best_idx]["awaiting_13"])
+            sell_deferred_active.iloc[i] = bool(sell_trackers[best]["awaiting_13"])
 
         buy_countdown_active.iloc[i] = any(not t["done"] for t in buy_trackers)
         sell_countdown_active.iloc[i] = any(not t["done"] for t in sell_trackers)
 
-        # Keep completed trackers only for the completion bar, then remove.
         buy_trackers = [t for t in buy_trackers if not t["done"]]
         sell_trackers = [t for t in sell_trackers if not t["done"]]
 
     return (
-        buy_countdown, sell_countdown,
-        deferred_buy, deferred_sell,
-        recycled_buy, recycled_sell,
-        buy_countdown_active, sell_countdown_active,
-        buy_deferred_active, sell_deferred_active,
+        buy_countdown,
+        sell_countdown,
+        deferred_buy,
+        deferred_sell,
+        recycled_buy,
+        recycled_sell,
+        buy_countdown_active,
+        sell_countdown_active,
+        buy_deferred_active,
+        sell_deferred_active,
     )
 
 
 def _tdst_levels(df: pd.DataFrame, buy_setup: pd.Series, sell_setup: pd.Series) -> tuple[pd.Series, pd.Series]:
-    """
-    TDST (TD Setup Trend) from completed setups using true highs/lows.
-    Buy Setup -> TDST Resistance = highest true high of completed 9 Buy Setup series.
-    Sell Setup -> TDST Support = lowest true low of completed 9 Sell Setup series.
-
-    Column naming is preserved for compatibility:
-      tdst_buy  = TDST resistance from Buy Setup
-      tdst_sell = TDST support from Sell Setup
-    """
+    """TDST from completed setups using true highs/lows."""
     tdst_buy = pd.Series(np.nan, index=df.index)
     tdst_sell = pd.Series(np.nan, index=df.index)
 
@@ -547,10 +470,8 @@ def _tdst_levels(df: pd.DataFrame, buy_setup: pd.Series, sell_setup: pd.Series) 
 
     for i in range(len(df)):
         if buy_setup.iloc[i] == 9:
-            window = df.iloc[max(0, i - 8) : i + 1]
             curr_buy = float(true_high.iloc[max(0, i - 8) : i + 1].max())
         if sell_setup.iloc[i] == 9:
-            window = df.iloc[max(0, i - 8) : i + 1]
             curr_sell = float(true_low.iloc[max(0, i - 8) : i + 1].min())
 
         tdst_buy.iloc[i] = curr_buy
@@ -559,387 +480,41 @@ def _tdst_levels(df: pd.DataFrame, buy_setup: pd.Series, sell_setup: pd.Series) 
     return tdst_buy, tdst_sell
 
 
-def _waves(df: pd.DataFrame) -> tuple:
-    """
-    TD D-Wave detection using closing prices as per Jason Perl's methodology.
-
-    Returns discrete pivot events for waves 1-5 and A-B-C plus projection levels.
-    Wave labels are emitted only on completion bars (no forward-filled markers).
-
-    For downtrend sequences, mirrored rules are applied and pivots are written to
-    the same columns so charting can display the complete structure.
-    """
-    close = df["Close"].astype(float).values
-    n = len(close)
-
-    wave_1 = np.full(n, np.nan)
-    wave_2 = np.full(n, np.nan)
-    wave_3 = np.full(n, np.nan)
-    wave_4 = np.full(n, np.nan)
-    wave_5 = np.full(n, np.nan)
-    wave_a = np.full(n, np.nan)
-    wave_b = np.full(n, np.nan)
-    wave_c = np.full(n, np.nan)
-
-    wave_2_proj = np.full(n, np.nan)
-    wave_3_proj = np.full(n, np.nan)
-    wave_4_proj = np.full(n, np.nan)
-    wave_5_proj = np.full(n, np.nan)
-    wave_c_proj = np.full(n, np.nan)
-    wave_state = [""] * n
-
-    trend = None  # None | "bull" | "bear"
-    state = ""
-
-    # Bull structure tracking
-    bw1_low = np.nan
-    bw1_high = np.nan
-    bw2_low = np.nan
-    bw2_high = np.nan
-    bw3_low = np.nan
-    bw3_high = np.nan
-    bw4_low = np.nan
-    bw4_high = np.nan
-    bw5_low = np.nan
-    bw5_high = np.nan
-    bwa_low = np.nan
-    bwa_high = np.nan
-    bwb_high = np.nan
-    bwc_low = np.nan
-    bw3_start = -1
-    bw5_start = -1
-    bwa_start = -1
-    bwb_start = -1
-
-    # Bear structure tracking (mirrored rules)
-    sw1_high = np.nan
-    sw1_low = np.nan
-    sw2_high = np.nan
-    sw2_low = np.nan
-    sw3_high = np.nan
-    sw3_low = np.nan
-    sw4_high = np.nan
-    sw4_low = np.nan
-    sw5_high = np.nan
-    sw5_low = np.nan
-    swa_high = np.nan
-    swa_low = np.nan
-    swb_low = np.nan
-    swc_high = np.nan
-    sw3_start = -1
-    sw5_start = -1
-    swa_start = -1
-    swb_start = -1
-
-    def reset_cycle() -> None:
-        nonlocal trend, state
-        trend = None
-        state = ""
-
-    def is_n_bar_low(i: int, lookback: int) -> bool:
-        if i < lookback - 1:
-            return False
-        return close[i] < np.min(close[i - lookback + 1 : i])
-
-    def is_n_bar_high(i: int, lookback: int) -> bool:
-        if i < lookback - 1:
-            return False
-        return close[i] > np.max(close[i - lookback + 1 : i])
-
-    for i in range(n):
-        c = close[i]
-
-        if trend is None:
-            if is_n_bar_low(i, 21):
-                trend = "bull"
-                state = "W1_origin"
-                bw1_low = c
-                wave_state[i] = "W1_origin"
-                continue
-            if is_n_bar_high(i, 21):
-                trend = "bear"
-                state = "D1_origin"
-                sw1_high = c
-                wave_state[i] = "D1_origin"
-                continue
-
-        if trend == "bull":
-            if state == "W1_origin":
-                if c < bw1_low:
-                    bw1_low = c
-                if is_n_bar_high(i, 13):
-                    bw1_high = c
-                    state = "W1_wait_end"
-
-            elif state == "W1_wait_end":
-                if is_n_bar_low(i, 8):
-                    wave_1[i] = bw1_high
-                    bw2_low = c
-                    state = "W2"
-
-            elif state == "W2":
-                if c < bw2_low:
-                    bw2_low = c
-                if is_n_bar_high(i, 21):
-                    # Invalidation: W2 cannot close below W1 origin low.
-                    if c < bw1_low:
-                        reset_cycle()
-                        continue
-                    bw2_high = c
-                    wave_2[i] = bw2_high
-                    w1_range = bw1_high - bw1_low
-                    wave_2_proj[i] = bw1_low + w1_range * 0.618
-                    wave_3_proj[i] = bw1_low + w1_range * 1.618
-                    bw3_low = c
-                    bw3_start = i
-                    state = "W3"
-
-            elif state == "W3":
-                if c < bw3_low:
-                    bw3_low = c
-                if is_n_bar_low(i, 13):
-                    bw3_high = float(np.max(close[max(0, bw3_start) : i + 1]))
-                    # Wave 3 peak must exceed Wave 1 peak.
-                    if bw3_high <= bw1_high:
-                        reset_cycle()
-                        continue
-                    wave_3[i] = bw3_high
-                    bw4_low = c
-                    bw4_high = np.nan
-                    state = "W4"
-
-            elif state == "W4":
-                if c < bw4_low:
-                    bw4_low = c
-                # Invalidation: Wave 4 cannot close below Wave 2 low.
-                if c < bw2_low:
-                    reset_cycle()
-                    continue
-                if is_n_bar_high(i, 34):
-                    bw4_high = c
-                    wave_4[i] = bw4_high
-                    w3_range = bw3_high - bw3_low
-                    wave_4_proj[i] = bw3_high - (w3_range * 0.382)
-                    wave_5_proj[i] = bw3_low + (w3_range * 1.618)
-                    bw5_start = i
-                    bw5_low = c
-                    state = "W5"
-
-            elif state == "W5":
-                if c < bw5_low:
-                    bw5_low = c
-                if is_n_bar_low(i, 13):
-                    bw5_high = float(np.max(close[max(0, bw5_start) : i + 1]))
-                    # Wave 5 peak must exceed Wave 3 peak.
-                    if bw5_high <= bw3_high:
-                        reset_cycle()
-                        continue
-                    wave_5[i] = bw5_high
-                    bwa_start = i
-                    bwa_low = c
-                    bwa_high = c
-                    state = "WA"
-
-            elif state == "WA":
-                if c < bwa_low:
-                    bwa_low = c
-                if c > bwa_high:
-                    bwa_high = c
-                if is_n_bar_high(i, 8):
-                    wave_a[i] = bwa_low
-                    bwb_start = i
-                    bwb_high = c
-                    state = "WB"
-
-            elif state == "WB":
-                if c > bwb_high:
-                    bwb_high = c
-                # Enforce continuously during Wave B.
-                if c > bw5_high:
-                    reset_cycle()
-                    continue
-                if is_n_bar_low(i, 21):
-                    wave_b[i] = bwb_high
-                    wa_range = bwa_high - bwa_low
-                    wave_c_proj[i] = bwa_high - (wa_range * 1.618)
-                    bwc_low = c
-                    state = "WC"
-
-            elif state == "WC":
-                if c < bwc_low:
-                    bwc_low = c
-                # Wave C completes when close <= Wave A low.
-                if c <= bwa_low:
-                    wave_c[i] = bwc_low
-                    reset_cycle()
-                    continue
-
-            wave_state[i] = state
-
-        elif trend == "bear":
-            if state == "D1_origin":
-                if c > sw1_high:
-                    sw1_high = c
-                if is_n_bar_low(i, 13):
-                    sw1_low = c
-                    state = "D1_wait_end"
-
-            elif state == "D1_wait_end":
-                if is_n_bar_high(i, 8):
-                    wave_1[i] = sw1_low
-                    sw2_high = c
-                    state = "D2"
-
-            elif state == "D2":
-                if c > sw2_high:
-                    sw2_high = c
-                if is_n_bar_low(i, 21):
-                    # Invalidation: mirrored rule (cannot close above Wave1 origin high).
-                    if c > sw1_high:
-                        reset_cycle()
-                        continue
-                    sw2_low = c
-                    wave_2[i] = sw2_low
-                    w1_range = sw1_high - sw1_low
-                    wave_2_proj[i] = sw1_high - w1_range * 0.618
-                    wave_3_proj[i] = sw1_high - w1_range * 1.618
-                    sw3_high = c
-                    sw3_start = i
-                    state = "D3"
-
-            elif state == "D3":
-                if c > sw3_high:
-                    sw3_high = c
-                if is_n_bar_high(i, 13):
-                    sw3_low = float(np.min(close[max(0, sw3_start) : i + 1]))
-                    # Mirrored: Wave 3 trough must be below Wave 1 trough.
-                    if sw3_low >= sw1_low:
-                        reset_cycle()
-                        continue
-                    wave_3[i] = sw3_low
-                    sw4_high = c
-                    sw4_low = np.nan
-                    state = "D4"
-
-            elif state == "D4":
-                if c > sw4_high:
-                    sw4_high = c
-                # Mirrored invalidation: Wave 4 cannot close above Wave 2 high.
-                if c > sw2_high:
-                    reset_cycle()
-                    continue
-                if is_n_bar_low(i, 34):
-                    sw4_low = c
-                    wave_4[i] = sw4_low
-                    w3_range = sw3_high - sw3_low
-                    wave_4_proj[i] = sw3_low + (w3_range * 0.382)
-                    wave_5_proj[i] = sw3_high - (w3_range * 1.618)
-                    sw5_start = i
-                    sw5_high = c
-                    state = "D5"
-
-            elif state == "D5":
-                if c > sw5_high:
-                    sw5_high = c
-                if is_n_bar_high(i, 13):
-                    sw5_low = float(np.min(close[max(0, sw5_start) : i + 1]))
-                    if sw5_low >= sw3_low:
-                        reset_cycle()
-                        continue
-                    wave_5[i] = sw5_low
-                    swa_start = i
-                    swa_low = c
-                    swa_high = c
-                    state = "DA"
-
-            elif state == "DA":
-                if c < swa_low:
-                    swa_low = c
-                if c > swa_high:
-                    swa_high = c
-                if is_n_bar_low(i, 8):
-                    wave_a[i] = swa_high
-                    swb_start = i
-                    swb_low = c
-                    state = "DB"
-
-            elif state == "DB":
-                if c < swb_low:
-                    swb_low = c
-                # Continuous mirrored Wave B constraint.
-                if c < sw5_low:
-                    reset_cycle()
-                    continue
-                if is_n_bar_high(i, 21):
-                    wave_b[i] = swb_low
-                    sa_range = swa_high - swa_low
-                    wave_c_proj[i] = swa_low + (sa_range * 1.618)
-                    swc_high = c
-                    state = "DC"
-
-            elif state == "DC":
-                if c > swc_high:
-                    swc_high = c
-                # Mirrored Wave C completion.
-                if c >= swa_high:
-                    wave_c[i] = swc_high
-                    reset_cycle()
-                    continue
-
-            wave_state[i] = state
-
-    return (
-        pd.Series(wave_1, index=df.index),
-        pd.Series(wave_2, index=df.index),
-        pd.Series(wave_3, index=df.index),
-        pd.Series(wave_4, index=df.index),
-        pd.Series(wave_5, index=df.index),
-        pd.Series(wave_a, index=df.index),
-        pd.Series(wave_b, index=df.index),
-        pd.Series(wave_c, index=df.index),
-        pd.Series(wave_2_proj, index=df.index),
-        pd.Series(wave_3_proj, index=df.index),
-        pd.Series(wave_4_proj, index=df.index),
-        pd.Series(wave_5_proj, index=df.index),
-        pd.Series(wave_c_proj, index=df.index),
-        pd.Series(wave_state, index=df.index),
-    )
-
-
 def apply_demark(df: pd.DataFrame) -> pd.DataFrame:
-    """Apply complete TD Sequential indicators as per Jason Perl's DeMark Indicators."""
+    """Apply TD Sequential indicators to OHLCV history."""
     out = df.copy()
-    
-    # Price flips
+
     bullish_flip, bearish_flip = _price_flips(out["Close"])
     out["bullish_flip"] = bullish_flip
     out["bearish_flip"] = bearish_flip
 
-    # Setup counts
     buy_setup, sell_setup, buy_perfected, sell_perfected = _setup_counts(out, bullish_flip, bearish_flip)
     out["buy_setup"] = buy_setup
     out["sell_setup"] = sell_setup
     out["buy_perfected"] = buy_perfected
     out["sell_perfected"] = sell_perfected
 
-    # Extended setup counts (internal recycle qualification support)
     buy_setup_ext, sell_setup_ext = _setup_extensions(out, bullish_flip, bearish_flip)
     out["buy_setup_ext"] = buy_setup_ext
     out["sell_setup_ext"] = sell_setup_ext
 
-    # TDST levels
     tdst_buy, tdst_sell = _tdst_levels(out, buy_setup, sell_setup)
     out["tdst_buy"] = tdst_buy
     out["tdst_sell"] = tdst_sell
 
-    # Countdown counts
     (
-        buy_countdown, sell_countdown,
-        deferred_buy, deferred_sell,
-        recycled_buy, recycled_sell,
-        buy_countdown_active, sell_countdown_active,
-        buy_deferred_active, sell_deferred_active,
+        buy_countdown,
+        sell_countdown,
+        deferred_buy,
+        deferred_sell,
+        recycled_buy,
+        recycled_sell,
+        buy_countdown_active,
+        sell_countdown_active,
+        buy_deferred_active,
+        sell_deferred_active,
     ) = _countdowns(out, buy_setup, sell_setup, buy_setup_ext, sell_setup_ext, tdst_buy, tdst_sell)
+
     out["buy_countdown"] = buy_countdown
     out["sell_countdown"] = sell_countdown
     out["deferred_buy"] = deferred_buy
@@ -951,24 +526,5 @@ def apply_demark(df: pd.DataFrame) -> pd.DataFrame:
     out["buy_deferred_active"] = buy_deferred_active
     out["sell_deferred_active"] = sell_deferred_active
 
-    # True range for risk calculations
     out["true_range"] = _true_range(out)
-
-    # TD D-Wave is disabled for now pending full accuracy validation.
-    # Keep columns present as placeholders to preserve downstream compatibility.
-    out["wave_1"] = np.nan
-    out["wave_2"] = np.nan
-    out["wave_3"] = np.nan
-    out["wave_4"] = np.nan
-    out["wave_5"] = np.nan
-    out["wave_a"] = np.nan
-    out["wave_b"] = np.nan
-    out["wave_c"] = np.nan
-    out["wave_2_proj"] = np.nan
-    out["wave_3_proj"] = np.nan
-    out["wave_4_proj"] = np.nan
-    out["wave_5_proj"] = np.nan
-    out["wave_c_proj"] = np.nan
-    out["wave_state"] = ""
-
     return out
