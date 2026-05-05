@@ -244,12 +244,26 @@ def _countdowns(
     last_buy_13_idx = None
     last_sell_13_idx = None
 
+    # Gating policy for hidden same-direction trackers:
+    # Avoid spawning unlimited overlapping countdowns (which can overproduce 13s),
+    # but still allow limited overlap when the currently displayed tracker is very
+    # close to completion (awaiting/deferred 13).
+    ALLOW_OVERLAP_WHEN_AWAITING_13 = True
+
     def _progress_score(tracker: dict) -> float:
         if tracker["done"]:
             return 13.0
         if tracker["awaiting_13"]:
             return 12.5
         return float(tracker["count"])
+
+    def _can_spawn_same_direction_tracker(trackers: list[dict]) -> bool:
+        active = [t for t in trackers if not t["done"]]
+        if not active:
+            return True
+        if ALLOW_OVERLAP_WHEN_AWAITING_13 and any(t["awaiting_13"] for t in active):
+            return True
+        return False
 
     def _update_buy_tracker(tracker: dict, i: int) -> tuple[int | None, bool]:
         printed_value: int | None = None
@@ -338,9 +352,11 @@ def _countdowns(
 
         # Start a new background tracker on every Setup 9.
         if buy_setup.iloc[i] == 9:
-            buy_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
+            if _can_spawn_same_direction_tracker(buy_trackers):
+                buy_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
         if sell_setup.iloc[i] == 9:
-            sell_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
+            if _can_spawn_same_direction_tracker(sell_trackers):
+                sell_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
 
         buy_events: list[tuple[int | None, bool]] = []
         for tracker in buy_trackers:
