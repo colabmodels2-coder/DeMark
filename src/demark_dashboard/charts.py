@@ -6,7 +6,7 @@ from plotly.subplots import make_subplots
 
 
 def build_figure(df: pd.DataFrame, symbol: str) -> go.Figure:
-    """Build interactive candlestick chart with complete TD Sequential overlays."""
+    """Build interactive OHLC chart with TD Sequential overlays in DeMark-style notation."""
     fig = make_subplots(
         rows=2,
         cols=1,
@@ -15,9 +15,9 @@ def build_figure(df: pd.DataFrame, symbol: str) -> go.Figure:
         row_heights=[0.75, 0.25],
     )
 
-    # Candlestick chart
+    # OHLC bars (book-style visual language)
     fig.add_trace(
-        go.Candlestick(
+        go.Ohlc(
             x=df.index,
             open=df["Open"],
             high=df["High"],
@@ -26,10 +26,85 @@ def build_figure(df: pd.DataFrame, symbol: str) -> go.Figure:
             name=symbol,
             increasing_line_color="#16a34a",
             decreasing_line_color="#dc2626",
+            line_width=1,
         ),
         row=1,
         col=1,
     )
+
+    # Full Setup counts 1-9
+    buy_setup = df[df["buy_setup"] > 0]
+    if not buy_setup.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=buy_setup.index,
+                y=buy_setup["Low"] * 0.995,
+                mode="text",
+                text=[str(int(v)) for v in buy_setup["buy_setup"]],
+                textposition="bottom center",
+                textfont=dict(size=10, color="#2563eb", family="Courier New, monospace"),
+                name="Buy Setup 1-9",
+                hovertext=[f"Buy Setup {int(v)}/9" for v in buy_setup["buy_setup"]],
+                hoverinfo="x+text",
+            ),
+            row=1,
+            col=1,
+        )
+
+    sell_setup = df[df["sell_setup"] > 0]
+    if not sell_setup.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=sell_setup.index,
+                y=sell_setup["High"] * 1.005,
+                mode="text",
+                text=[str(int(v)) for v in sell_setup["sell_setup"]],
+                textposition="top center",
+                textfont=dict(size=10, color="#dc2626", family="Courier New, monospace"),
+                name="Sell Setup 1-9",
+                hovertext=[f"Sell Setup {int(v)}/9" for v in sell_setup["sell_setup"]],
+                hoverinfo="x+text",
+            ),
+            row=1,
+            col=1,
+        )
+
+    # Full Countdown counts 1-13 (display as parenthesized numbers)
+    buy_cd = df[df["buy_countdown"] > 0]
+    if not buy_cd.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=buy_cd.index,
+                y=buy_cd["Low"] * 0.985,
+                mode="text",
+                text=[f"({int(v)})" for v in buy_cd["buy_countdown"]],
+                textposition="bottom center",
+                textfont=dict(size=9, color="#0f766e", family="Courier New, monospace"),
+                name="Buy Countdown 1-13",
+                hovertext=[f"Buy Countdown {int(v)}/13" for v in buy_cd["buy_countdown"]],
+                hoverinfo="x+text",
+            ),
+            row=1,
+            col=1,
+        )
+
+    sell_cd = df[df["sell_countdown"] > 0]
+    if not sell_cd.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=sell_cd.index,
+                y=sell_cd["High"] * 1.015,
+                mode="text",
+                text=[f"({int(v)})" for v in sell_cd["sell_countdown"]],
+                textposition="top center",
+                textfont=dict(size=9, color="#9f1239", family="Courier New, monospace"),
+                name="Sell Countdown 1-13",
+                hovertext=[f"Sell Countdown {int(v)}/13" for v in sell_cd["sell_countdown"]],
+                hoverinfo="x+text",
+            ),
+            row=1,
+            col=1,
+        )
 
     # TDST support (Buy Support)
     fig.add_trace(
@@ -59,7 +134,7 @@ def build_figure(df: pd.DataFrame, symbol: str) -> go.Figure:
         col=1,
     )
 
-    # Buy Setup completion (9) - green diamonds
+    # Buy Setup completion (9)
     buy9 = df[df["buy_setup"] == 9]
     fig.add_trace(
         go.Scatter(
@@ -67,18 +142,18 @@ def build_figure(df: pd.DataFrame, symbol: str) -> go.Figure:
             y=buy9["Low"] * 0.98,
             mode="markers+text",
             marker=dict(color="#2563eb", size=10, symbol="diamond"),
-            text=["B9"] * len(buy9),
+            text=["9"] * len(buy9),
             textposition="bottom center",
             textfont=dict(size=9, color="#2563eb"),
-            name="Buy Setup 9",
-            hovertext=[f"Buy Setup 9 Complete" for _ in buy9.index],
+            name="Buy Setup 9 Complete",
+            hovertext=["Buy Setup 9 complete" for _ in buy9.index],
             hoverinfo="x+text",
         ),
         row=1,
         col=1,
     )
 
-    # Sell Setup completion (9) - red diamonds
+    # Sell Setup completion (9)
     sell9 = df[df["sell_setup"] == 9]
     fig.add_trace(
         go.Scatter(
@@ -86,18 +161,18 @@ def build_figure(df: pd.DataFrame, symbol: str) -> go.Figure:
             y=sell9["High"] * 1.02,
             mode="markers+text",
             marker=dict(color="#dc2626", size=10, symbol="diamond"),
-            text=["S9"] * len(sell9),
+            text=["9"] * len(sell9),
             textposition="top center",
             textfont=dict(size=9, color="#dc2626"),
-            name="Sell Setup 9",
-            hovertext=[f"Sell Setup 9 Complete" for _ in sell9.index],
+            name="Sell Setup 9 Complete",
+            hovertext=["Sell Setup 9 complete" for _ in sell9.index],
             hoverinfo="x+text",
         ),
         row=1,
         col=1,
     )
 
-    # Buy Countdown 13 - green squares
+    # Buy Countdown 13
     buy13 = df[df["buy_countdown"] == 13]
     fig.add_trace(
         go.Scatter(
@@ -105,18 +180,18 @@ def build_figure(df: pd.DataFrame, symbol: str) -> go.Figure:
             y=buy13["Low"] * 0.96,
             mode="markers+text",
             marker=dict(color="#059669", size=12, symbol="square"),
-            text=["B13"] * len(buy13),
+            text=["13"] * len(buy13),
             textposition="bottom center",
             textfont=dict(size=10, color="#059669", family="monospace"),
-            name="Buy Countdown 13",
-            hovertext=[f"Buy Countdown 13 - Signal!" for _ in buy13.index],
+            name="Buy Countdown 13 Complete",
+            hovertext=["Buy Countdown 13 signal" for _ in buy13.index],
             hoverinfo="x+text",
         ),
         row=1,
         col=1,
     )
 
-    # Sell Countdown 13 - red squares
+    # Sell Countdown 13
     sell13 = df[df["sell_countdown"] == 13]
     fig.add_trace(
         go.Scatter(
@@ -124,18 +199,18 @@ def build_figure(df: pd.DataFrame, symbol: str) -> go.Figure:
             y=sell13["High"] * 1.04,
             mode="markers+text",
             marker=dict(color="#991b1b", size=12, symbol="square"),
-            text=["S13"] * len(sell13),
+            text=["13"] * len(sell13),
             textposition="top center",
             textfont=dict(size=10, color="#991b1b", family="monospace"),
-            name="Sell Countdown 13",
-            hovertext=[f"Sell Countdown 13 - Signal!" for _ in sell13.index],
+            name="Sell Countdown 13 Complete",
+            hovertext=["Sell Countdown 13 signal" for _ in sell13.index],
             hoverinfo="x+text",
         ),
         row=1,
         col=1,
     )
 
-    # Deferred Buy (+)
+    # Deferred Buy (13+)
     deferred_buy = df[df["deferred_buy"]]
     if not deferred_buy.empty:
         fig.add_trace(
@@ -144,18 +219,18 @@ def build_figure(df: pd.DataFrame, symbol: str) -> go.Figure:
                 y=deferred_buy["Low"] * 0.965,
                 mode="markers+text",
                 marker=dict(color="#fbbf24", size=9),
-                text=["+"] * len(deferred_buy),
+                text=["13+"] * len(deferred_buy),
                 textposition="bottom center",
                 textfont=dict(size=14, color="#fbbf24"),
-                name="Deferred Buy (+)",
-                hovertext=[f"Buy Countdown Deferred" for _ in deferred_buy.index],
+                name="Deferred Buy 13+",
+                hovertext=["Buy Countdown deferred (13+)" for _ in deferred_buy.index],
                 hoverinfo="x+text",
             ),
             row=1,
             col=1,
         )
 
-    # Deferred Sell (+)
+    # Deferred Sell (13+)
     deferred_sell = df[df["deferred_sell"]]
     if not deferred_sell.empty:
         fig.add_trace(
@@ -164,11 +239,48 @@ def build_figure(df: pd.DataFrame, symbol: str) -> go.Figure:
                 y=deferred_sell["High"] * 1.032,
                 mode="markers+text",
                 marker=dict(color="#fbbf24", size=9),
-                text=["+"] * len(deferred_sell),
+                text=["13+"] * len(deferred_sell),
                 textposition="top center",
                 textfont=dict(size=14, color="#fbbf24"),
-                name="Deferred Sell (+)",
-                hovertext=[f"Sell Countdown Deferred" for _ in deferred_sell.index],
+                name="Deferred Sell 13+",
+                hovertext=["Sell Countdown deferred (13+)" for _ in deferred_sell.index],
+                hoverinfo="x+text",
+            ),
+            row=1,
+            col=1,
+        )
+
+    # Recycle markers (R)
+    recycled_buy = df[df.get("recycled_buy", False)]
+    if not recycled_buy.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=recycled_buy.index,
+                y=recycled_buy["Low"] * 0.975,
+                mode="text",
+                text=["R"] * len(recycled_buy),
+                textposition="bottom center",
+                textfont=dict(size=12, color="#1d4ed8", family="Courier New, monospace"),
+                name="Buy Recycle (R)",
+                hovertext=["Buy Countdown recycled" for _ in recycled_buy.index],
+                hoverinfo="x+text",
+            ),
+            row=1,
+            col=1,
+        )
+
+    recycled_sell = df[df.get("recycled_sell", False)]
+    if not recycled_sell.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=recycled_sell.index,
+                y=recycled_sell["High"] * 1.025,
+                mode="text",
+                text=["R"] * len(recycled_sell),
+                textposition="top center",
+                textfont=dict(size=12, color="#b91c1c", family="Courier New, monospace"),
+                name="Sell Recycle (R)",
+                hovertext=["Sell Countdown recycled" for _ in recycled_sell.index],
                 hoverinfo="x+text",
             ),
             row=1,
