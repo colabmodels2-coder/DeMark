@@ -107,11 +107,15 @@ with st.sidebar:
     st.divider()
     st.header("📈 Legend")
     st.markdown("""
-    - **B9** / **S9**: Buy/Sell Setup complete (9 bars)
-    - **B13** / **S13**: Buy/Sell Countdown complete (13 bars) ← **SIGNAL**
-    - **⊕**: Deferred signal (bar 13 conditions incomplete)
-    - **↑** / **↓**: Setup perfected
+    - **1..9**: TD Setup counts on each bar
+    - **(1)..(13)**: TD Countdown counts on each qualifying bar
+    - **9**: Setup completion marker
+    - **13**: Countdown completion marker
+    - **13+**: Deferred countdown completion (+)
+    - **R**: Countdown recycle marker
+    - **↑** / **↓**: Setup perfection qualifiers
     - **TDST**: Support/Resistance levels from setup extremes
+    - **Price style**: OHLC bars (not candles)
     """)
 
 if not selected:
