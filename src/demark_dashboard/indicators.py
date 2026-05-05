@@ -26,8 +26,11 @@ def _price_flips(close: pd.Series) -> tuple[pd.Series, pd.Series]:
     prev_close = close.shift(1)
     prev_shifted_4 = close.shift(5)
 
-    bullish_flip = (close > shifted_4) & (prev_close <= prev_shifted_4)
-    bearish_flip = (close < shifted_4) & (prev_close >= prev_shifted_4)
+    # Strict flip definition per book language:
+    # bullish: prior bar was strictly below close[4], current bar strictly above close[4]
+    # bearish: prior bar was strictly above close[4], current bar strictly below close[4]
+    bullish_flip = (close > shifted_4) & (prev_close < prev_shifted_4)
+    bearish_flip = (close < shifted_4) & (prev_close > prev_shifted_4)
     return bullish_flip.fillna(False), bearish_flip.fillna(False)
 
 
@@ -98,23 +101,43 @@ def _setup_counts(df: pd.DataFrame, bullish_flip: pd.Series, bearish_flip: pd.Se
                 sell_active = False
                 scount = 0
 
-    # Check for perfection: low/high of bars 8-9 more extreme than bars 6-7
-    for i in range(len(df)):
-        if buy_setup.iloc[i] == 9:
-            loc = i
-            if loc >= 8:
-                low_8_9 = min(low.iloc[loc - 1], low.iloc[loc])
-                low_6_7 = min(low.iloc[loc - 3], low.iloc[loc - 2])
-                if low_8_9 <= low_6_7:
-                    buy_perfected.iloc[i] = True
+    # Perfection can be deferred beyond setup bar 9.
+    pending_buy_level = np.nan   # threshold = min(Low6, Low7) from most recent buy setup 9
+    pending_sell_level = np.nan  # threshold = max(High6, High7) from most recent sell setup 9
+    buy_pending = False
+    sell_pending = False
 
+    for i in range(len(df)):
+        if buy_setup.iloc[i] == 9 and i >= 8:
+            pending_buy_level = min(low.iloc[i - 3], low.iloc[i - 2])
+            buy_pending = True
+            # Immediate perfection on bar 9 if bar 8 or 9 satisfies level.
+            if min(low.iloc[i - 1], low.iloc[i]) <= pending_buy_level:
+                buy_perfected.iloc[i] = True
+                buy_pending = False
+
+        if sell_setup.iloc[i] == 9 and i >= 8:
+            pending_sell_level = max(high.iloc[i - 3], high.iloc[i - 2])
+            sell_pending = True
+            # Immediate perfection on bar 9 if bar 8 or 9 satisfies level.
+            if max(high.iloc[i - 1], high.iloc[i]) >= pending_sell_level:
+                sell_perfected.iloc[i] = True
+                sell_pending = False
+
+        # Deferred perfection after setup 9.
+        if buy_pending and low.iloc[i] <= pending_buy_level:
+            buy_perfected.iloc[i] = True
+            buy_pending = False
+
+        if sell_pending and high.iloc[i] >= pending_sell_level:
+            sell_perfected.iloc[i] = True
+            sell_pending = False
+
+        # New opposite completed setup invalidates pending perfection context.
+        if buy_setup.iloc[i] == 9:
+            sell_pending = False
         if sell_setup.iloc[i] == 9:
-            loc = i
-            if loc >= 8:
-                high_8_9 = max(high.iloc[loc - 1], high.iloc[loc])
-                high_6_7 = max(high.iloc[loc - 3], high.iloc[loc - 2])
-                if high_8_9 >= high_6_7:
-                    sell_perfected.iloc[i] = True
+            buy_pending = False
 
     return buy_setup, sell_setup, buy_perfected, sell_perfected
 
