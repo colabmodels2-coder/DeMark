@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import warnings
+import time
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -91,36 +92,40 @@ def _generate_demo_ohlc(symbol: str, periods: int = 252) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(show_spinner=False, ttl=300)
+@st.cache_data(show_spinner=False, ttl=1800)
 def load_ohlc(symbol: str, period: str = "1y", interval: str = "1d") -> pd.DataFrame:
+    # Enforce daily data only to reduce provider throttling and meet dashboard scope.
+    interval = "1d"
     yahoo_error = None
-    try:
-        ticker = yf.Ticker(symbol)
-        df = ticker.history(period=period, interval=interval, auto_adjust=False, progress=False)
-        
-        if not df.empty:
-            cols = ["Open", "High", "Low", "Close", "Volume"]
-            df = df[cols].copy()
-            if isinstance(df.index, pd.DatetimeIndex):
-                df.index = df.index.tz_localize(None)
-            df.dropna(inplace=True)
-            return df
-    except Exception as e:
-        yahoo_error = e
+    for attempt in range(3):
+        try:
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(period=period, interval=interval, auto_adjust=False, progress=False)
+
+            if not df.empty:
+                cols = ["Open", "High", "Low", "Close", "Volume"]
+                df = df[cols].copy()
+                if isinstance(df.index, pd.DatetimeIndex):
+                    df.index = df.index.tz_localize(None)
+                df.dropna(inplace=True)
+                return df
+        except Exception as e:
+            yahoo_error = e
+            if attempt < 2:
+                time.sleep(1.25 * (attempt + 1))
 
     # Daily Stooq fallback can often bypass temporary Yahoo rate limits.
-    if interval == "1d":
-        try:
-            stooq_df = _load_stooq_daily(symbol, period)
-            if not stooq_df.empty:
-                if yahoo_error is not None:
-                    st.info(
-                        f"📡 Yahoo Finance is rate limited for {symbol}. "
-                        f"Using Stooq daily data fallback."
-                    )
-                return stooq_df
-        except Exception:
-            pass
+    try:
+        stooq_df = _load_stooq_daily(symbol, period)
+        if not stooq_df.empty:
+            if yahoo_error is not None:
+                st.info(
+                    f"📡 Yahoo Finance is rate limited for {symbol}. "
+                    f"Using Stooq daily data fallback."
+                )
+            return stooq_df
+    except Exception:
+        pass
 
     if yahoo_error is not None:
         error_msg = str(yahoo_error)[:150]
