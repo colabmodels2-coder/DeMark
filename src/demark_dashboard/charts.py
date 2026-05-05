@@ -124,13 +124,13 @@ def build_figure(
                 col=1,
             )
 
-        # TDST support (Buy Support)
+        # TDST resistance from completed Buy Setup
         fig.add_trace(
             go.Scatter(
                 x=df.index,
                 y=df["tdst_buy"],
                 mode="lines",
-                name="TDST Buy Support",
+                name="TDST Buy Resistance",
                 line=dict(color="#0ea5e9", width=1.5, dash="dot"),
                 fill=None,
             ),
@@ -138,13 +138,13 @@ def build_figure(
             col=1,
         )
 
-        # TDST resistance (Sell Resistance)
+        # TDST support from completed Sell Setup
         fig.add_trace(
             go.Scatter(
                 x=df.index,
                 y=df["tdst_sell"],
                 mode="lines",
-                name="TDST Sell Resistance",
+                name="TDST Sell Support",
                 line=dict(color="#f97316", width=1.5, dash="dot"),
                 fill=None,
             ),
@@ -212,6 +212,23 @@ def build_figure(
                 col=1,
             )
 
+            chart_end = df.index.max()
+            for idx, row_data in buy13.iterrows():
+                fig.add_trace(
+                    go.Scatter(
+                        x=[idx, chart_end],
+                        y=[row_data["Low"], row_data["Low"]],
+                        mode="lines",
+                        line=dict(color="#059669", width=1, dash="dash"),
+                        name="Buy 13 Level",
+                        hovertext=["Buy Countdown 13 level", "Buy Countdown 13 level"],
+                        hoverinfo="text+y",
+                        showlegend=False,
+                    ),
+                    row=1,
+                    col=1,
+                )
+
         # Sell Countdown 13
         sell13 = df[df["sell_countdown"] == 13]
         if not sell13.empty:
@@ -231,6 +248,23 @@ def build_figure(
                 row=1,
                 col=1,
             )
+
+            chart_end = df.index.max()
+            for idx, row_data in sell13.iterrows():
+                fig.add_trace(
+                    go.Scatter(
+                        x=[idx, chart_end],
+                        y=[row_data["High"], row_data["High"]],
+                        mode="lines",
+                        line=dict(color="#991b1b", width=1, dash="dash"),
+                        name="Sell 13 Level",
+                        hovertext=["Sell Countdown 13 level", "Sell Countdown 13 level"],
+                        hoverinfo="text+y",
+                        showlegend=False,
+                    ),
+                    row=1,
+                    col=1,
+                )
 
         # Deferred Buy (13+)
         deferred_buy = df[df["deferred_buy"]]
