@@ -12,7 +12,7 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
     lines: list[str] = []
 
     def _last_nonzero(series: pd.Series) -> tuple[int, int]:
-        """Return (value, bars_ago) for last nonzero entry."""
+        """Return (value, bars_ago) for last nonzero entry. bars_ago=-1 means none found."""
         s = pd.to_numeric(series, errors="coerce").fillna(0)
         nz_indices = s[s > 0].index
         if len(nz_indices) == 0:
@@ -26,61 +26,38 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
         bars_ago = len(s) - 1 - int(pos)
         return int(s.iloc[int(pos)]), bars_ago
 
-    def _last_pos_of_value(series: pd.Series, value) -> int:
-        """Return integer position of last occurrence of value, or -1."""
-        s = pd.to_numeric(series, errors="coerce").fillna(0)
-        matches = s[s == value].index
-        if len(matches) == 0:
-            return -1
-        label = matches[-1]
-        pos = s.index.get_loc(label)
-        if isinstance(pos, slice):
-            return pos.stop - 1
-        elif isinstance(pos, (list, tuple)):
-            return int(pos[-1])
-        return int(pos)
-
     n = len(df)
     close = float(latest["Close"])
 
-    # Current setup state (latest row only — setups only print on qualifying bars)
+    # Setup state on current bar
     buy_setup = int(latest.get("buy_setup", 0))
     sell_setup = int(latest.get("sell_setup", 0))
     buy_perfected = bool(latest.get("buy_perfected", False))
     sell_perfected = bool(latest.get("sell_perfected", False))
 
-    # Deferred/Recycled flags (from latest row)
-    deferred_buy = bool(latest.get("deferred_buy", False))
-    deferred_sell = bool(latest.get("deferred_sell", False))
+    # Countdown active state — read directly from indicators engine output
+    # buy_countdown_active / sell_countdown_active are True on every bar the countdown is running
+    # (including initiated-but-no-prints and deferred/awaiting states)
+    has_buy_cd = bool(latest.get("buy_countdown_active", False))
+    has_sell_cd = bool(latest.get("sell_countdown_active", False))
+
+    # Deferred/awaiting state — True throughout entire awaiting period (not just the first deferral bar)
+    buy_in_deferred = bool(latest.get("buy_deferred_active", False))
+    sell_in_deferred = bool(latest.get("sell_deferred_active", False))
+
+    # Deferred/Recycled event flags (from latest row — for commentary nuance)
+    deferred_buy_today = bool(latest.get("deferred_buy", False))
+    deferred_sell_today = bool(latest.get("deferred_sell", False))
     recycled_buy = bool(latest.get("recycled_buy", False))
     recycled_sell = bool(latest.get("recycled_sell", False))
+
+    # Last printed countdown bar (may be several bars ago — countdowns are non-continuous)
+    last_buy_cd, buy_cd_bars_ago = _last_nonzero(df["buy_countdown"])
+    last_sell_cd, sell_cd_bars_ago = _last_nonzero(df["sell_countdown"])
 
     # TDST levels
     tdst_buy = latest.get("tdst_buy")
     tdst_sell = latest.get("tdst_sell")
-
-    # -----------------------------------------------------------------------
-    # Determine which countdown is CURRENTLY ACTIVE
-    #
-    # A buy countdown is cancelled when a SELL setup 9 completes. So:
-    #   buy countdown is active  iff  last buy_countdown print > 0
-    #                                 AND no sell setup 9 occurred after that print
-    # -----------------------------------------------------------------------
-    last_buy_cd, buy_cd_bars_ago   = _last_nonzero(df["buy_countdown"])
-    last_sell_cd, sell_cd_bars_ago = _last_nonzero(df["sell_countdown"])
-
-    buy_cd_pos  = -1 if buy_cd_bars_ago  < 0 else (n - 1 - buy_cd_bars_ago)
-    sell_cd_pos = -1 if sell_cd_bars_ago < 0 else (n - 1 - sell_cd_bars_ago)
-
-    last_buy_s9_pos  = _last_pos_of_value(df["buy_setup"],  9)
-    last_sell_s9_pos = _last_pos_of_value(df["sell_setup"], 9)
-
-    # Buy countdown is active if it has prints AND no sell setup 9 occurred after the last print
-    buy_cd_cancelled  = (last_sell_s9_pos > buy_cd_pos)
-    sell_cd_cancelled = (last_buy_s9_pos  > sell_cd_pos)
-
-    has_buy_cd  = (last_buy_cd  > 0 or deferred_buy)  and not buy_cd_cancelled
-    has_sell_cd = (last_sell_cd > 0 or deferred_sell) and not sell_cd_cancelled
 
     # =========================================================================
     # SETUP PHASE STATUS
@@ -91,114 +68,116 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
 
     if buy_setup > 0:
         if buy_setup == 9:
-            s = (
-                f"Buy setup 9 complete. Nine consecutive closes < Close[4]. "
-                f"Downside momentum structure formed."
-            )
+            s = "Buy setup 9 complete. Nine consecutive closes < Close[4]. Downside momentum structure formed."
             if buy_perfected:
                 s += " Perfected: Low[8-9] ≤ min(Low[6-7])."
             if has_sell_cd:
-                s += " ⚠️ This completion has cancelled the prior sell countdown."
+                s += " ⚠️ This completion cancelled the prior sell countdown."
         else:
-            s = f"Buy setup {buy_setup}/9 — counting consecutive closes < Close[4]."
+            s = f"Buy setup {buy_setup}/9 — consecutive closes < Close[4]."
             if buy_setup >= 7:
                 s += " Downside momentum maturing."
             if has_sell_cd:
-                s += f" Note: if this reaches 9, it will cancel the active sell countdown."
+                s += f" Reaches 9, this will cancel the active sell countdown."
         setup_lines.append(s)
 
     if sell_setup > 0:
         if sell_setup == 9:
-            s = (
-                f"Sell setup 9 complete. Nine consecutive closes > Close[4]. "
-                f"Upside momentum structure formed."
-            )
+            s = "Sell setup 9 complete. Nine consecutive closes > Close[4]. Upside momentum structure formed."
             if sell_perfected:
                 s += " Perfected: High[8-9] ≥ max(High[6-7])."
             if has_buy_cd:
-                s += " ⚠️ This completion has cancelled the prior buy countdown."
+                s += " ⚠️ This completion cancelled the prior buy countdown."
         else:
-            s = f"Sell setup {sell_setup}/9 — counting consecutive closes > Close[4]."
+            s = f"Sell setup {sell_setup}/9 — consecutive closes > Close[4]."
             if sell_setup >= 7:
                 s += " Upside momentum maturing."
             if has_buy_cd:
-                s += f" Note: if this reaches 9, it will cancel the active buy countdown."
+                s += f" Reaches 9, this will cancel the active buy countdown."
         setup_lines.append(s)
 
     if not setup_lines:
-        setup_lines.append("No setup in progress. Awaiting price flip (Close crossing Close[4]) to initiate new sequence.")
+        setup_lines.append("No setup in progress. Awaiting price flip (Close crossing Close[4]) to begin.")
 
     setup_text = " | ".join(setup_lines)
 
     # =========================================================================
     # COUNTDOWN PHASE STATUS
     # Only ONE direction can be active at a time (mutual exclusivity).
-    # But a new SETUP can be forming in the opposite direction simultaneously —
-    # that countdown only gets cancelled when the new setup COMPLETES to 9.
+    # A new setup in the OPPOSITE direction can form while countdown runs —
+    # it cancels only when that new setup COMPLETES to 9.
     # =========================================================================
     countdown_text = ""
 
     if has_buy_cd and not has_sell_cd:
-        # Buy countdown is active
-        if deferred_buy:
+        if buy_in_deferred:
+            # In awaiting state: bar 13 close condition was met but low[13] > close[8]
+            if last_buy_cd > 0:
+                countdown_text = (
+                    f"Buy countdown deferred at bar {last_buy_cd}. "
+                    f"Qualifying bar reached but Low[13] > Close[8]. "
+                    f"Countdown continues — awaiting bar where Low ≤ Close[8] AND Close ≤ Low[2]."
+                )
+            else:
+                countdown_text = "Buy countdown deferred (12+). Awaiting bar where Low ≤ Close[8] AND Close ≤ Low[2]."
+        elif last_buy_cd == 13:
             countdown_text = (
-                f"Buy countdown deferred (12+). "
-                f"Bar 13 reached but Low[13] > Close[8] — condition not yet met. "
-                f"Awaiting a bar where Low ≤ Close[8] and Close ≤ Low[2]."
+                f"Buy countdown 13 complete. "
+                f"Low[13] ≤ Close[8] AND Close[13] ≤ Low[2]. "
+                f"Downside exhaustion confirmed."
+            )
+        elif last_buy_cd >= 10:
+            countdown_text = (
+                f"Buy countdown {last_buy_cd}/13 ({buy_cd_bars_ago} bars ago). "
+                f"Counting closes ≤ Low[2]. Late-stage exhaustion zone."
+            )
+        elif last_buy_cd >= 1:
+            countdown_text = (
+                f"Buy countdown {last_buy_cd}/13 ({buy_cd_bars_ago} bars ago). "
+                f"Counting closes ≤ Low[2]. Sequence ongoing."
             )
         else:
-            if last_buy_cd == 13:
-                countdown_text = (
-                    f"Buy countdown 13 complete. Both conditions met: "
-                    f"Low[13] ≤ Close[8] and Close[13] ≤ Low[2]. "
-                    f"Downside exhaustion confirmed."
-                )
-            elif last_buy_cd >= 10:
-                countdown_text = (
-                    f"Buy countdown {last_buy_cd}/13 ({buy_cd_bars_ago} bars ago). "
-                    f"Late stage — counting closes ≤ Low[2]. Exhaustion risk elevated."
-                )
-            elif last_buy_cd > 0:
-                countdown_text = (
-                    f"Buy countdown {last_buy_cd}/13 ({buy_cd_bars_ago} bars ago). "
-                    f"Counting closes ≤ Low[2]. Sequence ongoing."
-                )
-        if recycled_buy and countdown_text:
+            # Countdown initiated (setup 9 complete) but no qualifying bar yet
+            countdown_text = "Buy countdown initiated. Waiting for first qualifying bar (Close ≤ Low[2])."
+
+        if recycled_buy:
             countdown_text += " [Recycled: same-direction Setup 9 restarted count from bar 1]"
-        # Warn if opposite setup is forming and could cancel this
-        if sell_setup > 0:
-            countdown_text += f" Active sell setup {sell_setup}/9 — would cancel this countdown if it reaches 9."
+        if sell_setup > 0 and sell_setup < 9:
+            countdown_text += f" Note: sell setup {sell_setup}/9 forming — if it reaches 9, this countdown is cancelled."
 
     elif has_sell_cd and not has_buy_cd:
-        # Sell countdown is active
-        if deferred_sell:
+        if sell_in_deferred:
+            if last_sell_cd > 0:
+                countdown_text = (
+                    f"Sell countdown deferred at bar {last_sell_cd}. "
+                    f"Qualifying bar reached but High[13] < Close[8]. "
+                    f"Countdown continues — awaiting bar where High ≥ Close[8] AND Close ≥ High[2]."
+                )
+            else:
+                countdown_text = "Sell countdown deferred (12+). Awaiting bar where High ≥ Close[8] AND Close ≥ High[2]."
+        elif last_sell_cd == 13:
             countdown_text = (
-                f"Sell countdown deferred (12+). "
-                f"Bar 13 reached but High[13] < Close[8] — condition not yet met. "
-                f"Awaiting a bar where High ≥ Close[8] and Close ≥ High[2]."
+                f"Sell countdown 13 complete. "
+                f"High[13] ≥ Close[8] AND Close[13] ≥ High[2]. "
+                f"Upside exhaustion confirmed."
+            )
+        elif last_sell_cd >= 10:
+            countdown_text = (
+                f"Sell countdown {last_sell_cd}/13 ({sell_cd_bars_ago} bars ago). "
+                f"Counting closes ≥ High[2]. Late-stage exhaustion zone."
+            )
+        elif last_sell_cd >= 1:
+            countdown_text = (
+                f"Sell countdown {last_sell_cd}/13 ({sell_cd_bars_ago} bars ago). "
+                f"Counting closes ≥ High[2]. Sequence ongoing."
             )
         else:
-            if last_sell_cd == 13:
-                countdown_text = (
-                    f"Sell countdown 13 complete. Both conditions met: "
-                    f"High[13] ≥ Close[8] and Close[13] ≥ High[2]. "
-                    f"Upside exhaustion confirmed."
-                )
-            elif last_sell_cd >= 10:
-                countdown_text = (
-                    f"Sell countdown {last_sell_cd}/13 ({sell_cd_bars_ago} bars ago). "
-                    f"Late stage — counting closes ≥ High[2]. Exhaustion risk elevated."
-                )
-            elif last_sell_cd > 0:
-                countdown_text = (
-                    f"Sell countdown {last_sell_cd}/13 ({sell_cd_bars_ago} bars ago). "
-                    f"Counting closes ≥ High[2]. Sequence ongoing."
-                )
-        if recycled_sell and countdown_text:
+            countdown_text = "Sell countdown initiated. Waiting for first qualifying bar (Close ≥ High[2])."
+
+        if recycled_sell:
             countdown_text += " [Recycled: same-direction Setup 9 restarted count from bar 1]"
-        # Warn if opposite setup is forming and could cancel this
-        if buy_setup > 0:
-            countdown_text += f" Active buy setup {buy_setup}/9 — would cancel this countdown if it reaches 9."
+        if buy_setup > 0 and buy_setup < 9:
+            countdown_text += f" Note: buy setup {buy_setup}/9 forming — if it reaches 9, this countdown is cancelled."
 
     else:
         countdown_text = "No active countdown. Awaiting Setup 9 completion to initiate exhaustion count."
@@ -237,39 +216,50 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
     # =========================================================================
     trend_parts = []
 
-    # Countdown + opposite setup forming is the key combined state
-    if has_buy_cd and sell_setup > 0:
+    if has_buy_cd and sell_setup > 0 and sell_setup < 9:
         trend_parts.append(
-            f"Buy countdown active ({last_buy_cd}/13) while sell setup forming ({sell_setup}/9). "
-            f"Market attempting to reverse direction — exhaustion sequence at risk of cancellation."
+            f"Buy countdown running ({last_buy_cd}/13) while sell setup builds ({sell_setup}/9). "
+            f"Market attempting to reverse — if sell setup reaches 9, exhaustion count is cancelled."
         )
-    elif has_sell_cd and buy_setup > 0:
+    elif has_sell_cd and buy_setup > 0 and buy_setup < 9:
         trend_parts.append(
-            f"Sell countdown active ({last_sell_cd}/13) while buy setup forming ({buy_setup}/9). "
-            f"Market attempting to reverse direction — exhaustion sequence at risk of cancellation."
+            f"Sell countdown running ({last_sell_cd}/13) while buy setup builds ({buy_setup}/9). "
+            f"Market attempting to reverse — if buy setup reaches 9, exhaustion count is cancelled."
         )
     elif has_buy_cd:
-        if last_buy_cd >= 10:
+        if buy_in_deferred:
+            trend_parts.append("Downside exhaustion deferred — countdown in awaiting state for qualifying bar 13.")
+        elif last_buy_cd == 13:
+            trend_parts.append("Downside exhaustion complete (13). Reversal evidence present.")
+        elif last_buy_cd >= 10:
             trend_parts.append("Late-stage downside exhaustion. Reversal probability increasing.")
         elif last_buy_cd >= 7:
             trend_parts.append("Mid-stage downside exhaustion. Trend intact but tiring.")
-        else:
+        elif last_buy_cd >= 1:
             trend_parts.append("Early downside exhaustion count. Trend remains dominant.")
+        else:
+            trend_parts.append("Downside countdown initiated. Trend dominant, no qualifying bars yet.")
     elif has_sell_cd:
-        if last_sell_cd >= 10:
+        if sell_in_deferred:
+            trend_parts.append("Upside exhaustion deferred — countdown in awaiting state for qualifying bar 13.")
+        elif last_sell_cd == 13:
+            trend_parts.append("Upside exhaustion complete (13). Reversal evidence present.")
+        elif last_sell_cd >= 10:
             trend_parts.append("Late-stage upside exhaustion. Reversal probability increasing.")
         elif last_sell_cd >= 7:
             trend_parts.append("Mid-stage upside exhaustion. Trend intact but tiring.")
-        else:
+        elif last_sell_cd >= 1:
             trend_parts.append("Early upside exhaustion count. Trend remains dominant.")
+        else:
+            trend_parts.append("Upside countdown initiated. Trend dominant, no qualifying bars yet.")
     elif buy_setup > 0 and not has_buy_cd:
         if buy_setup == 9:
-            trend_parts.append("Downside structure complete. Countdown initiation pending.")
+            trend_parts.append("Downside structure complete. Countdown initiated — awaiting first qualifying bar.")
         else:
             trend_parts.append(f"Downside structure building ({buy_setup}/9). No exhaustion count yet.")
     elif sell_setup > 0 and not has_sell_cd:
         if sell_setup == 9:
-            trend_parts.append("Upside structure complete. Countdown initiation pending.")
+            trend_parts.append("Upside structure complete. Countdown initiated — awaiting first qualifying bar.")
         else:
             trend_parts.append(f"Upside structure building ({sell_setup}/9). No exhaustion count yet.")
     else:
