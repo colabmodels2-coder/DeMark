@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 
-def build_figure(df: pd.DataFrame, symbol: str) -> go.Figure:
+def build_figure(df: pd.DataFrame, symbol: str, timeframe_label: str = "Daily") -> go.Figure:
     """Build interactive OHLC chart with TD Sequential overlays in DeMark-style notation."""
     fig = make_subplots(
         rows=2,
@@ -335,7 +335,7 @@ def build_figure(df: pd.DataFrame, symbol: str) -> go.Figure:
     )
 
     fig.update_layout(
-        title=f"<b>{symbol}</b> — DeMark TD Sequential Dashboard (Jason Perl Methodology)",
+        title=f"<b>{symbol}</b> — {timeframe_label} DeMark TD Sequential Dashboard",
         template="plotly_white",
         xaxis_rangeslider_visible=False,
         legend=dict(orientation="v", yanchor="top", y=0.99, xanchor="left", x=0.01, font=dict(size=9)),
@@ -348,5 +348,9 @@ def build_figure(df: pd.DataFrame, symbol: str) -> go.Figure:
     fig.update_yaxes(title_text="Price", row=1, col=1)
     fig.update_yaxes(title_text="Volume", row=2, col=1)
     fig.update_xaxes(title_text="Date", row=2, col=1)
+    # Skip non-trading days to remove weekend visual gaps on daily charts.
+    if timeframe_label.lower() == "daily":
+        fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])], row=1, col=1)
+        fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])], row=2, col=1)
 
     return fig
