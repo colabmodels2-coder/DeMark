@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import importlib.util
 from pathlib import Path
 
 import streamlit as st
@@ -11,11 +12,79 @@ SRC_DIR = ROOT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from demark_dashboard.charts import build_figure
-from demark_dashboard.config import COMMODITIES, EQUITIES, FX, INTERVAL_OPTIONS, PERIOD_OPTIONS
-from demark_dashboard.data import load_ohlc
-from demark_dashboard.indicators import apply_demark
-from demark_dashboard.insights import build_insight_text
+
+def _load_module(module_name: str, module_path: Path):
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load module spec for {module_name} from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _import_dashboard_symbols():
+    try:
+        from demark_dashboard.charts import build_figure as _build_figure
+        from demark_dashboard.config import (
+            COMMODITIES as _COMMODITIES,
+            EQUITIES as _EQUITIES,
+            FX as _FX,
+            INTERVAL_OPTIONS as _INTERVAL_OPTIONS,
+            PERIOD_OPTIONS as _PERIOD_OPTIONS,
+        )
+        from demark_dashboard.data import load_ohlc as _load_ohlc
+        from demark_dashboard.indicators import apply_demark as _apply_demark
+        from demark_dashboard.insights import build_insight_text as _build_insight_text
+        return (
+            _build_figure,
+            _COMMODITIES,
+            _EQUITIES,
+            _FX,
+            _INTERVAL_OPTIONS,
+            _PERIOD_OPTIONS,
+            _load_ohlc,
+            _apply_demark,
+            _build_insight_text,
+        )
+    except ModuleNotFoundError:
+        package_dir_candidates = [ROOT_DIR / "src" / "demark_dashboard", ROOT_DIR / "demark_dashboard"]
+        package_dir = next((p for p in package_dir_candidates if p.exists()), None)
+        if package_dir is None:
+            raise ModuleNotFoundError(
+                "Could not find 'demark_dashboard'. Ensure repository includes "
+                "src/demark_dashboard with charts.py, config.py, data.py, indicators.py, insights.py"
+            )
+
+        charts_mod = _load_module("demark_dashboard_charts", package_dir / "charts.py")
+        config_mod = _load_module("demark_dashboard_config", package_dir / "config.py")
+        data_mod = _load_module("demark_dashboard_data", package_dir / "data.py")
+        indicators_mod = _load_module("demark_dashboard_indicators", package_dir / "indicators.py")
+        insights_mod = _load_module("demark_dashboard_insights", package_dir / "insights.py")
+
+        return (
+            charts_mod.build_figure,
+            config_mod.COMMODITIES,
+            config_mod.EQUITIES,
+            config_mod.FX,
+            config_mod.INTERVAL_OPTIONS,
+            config_mod.PERIOD_OPTIONS,
+            data_mod.load_ohlc,
+            indicators_mod.apply_demark,
+            insights_mod.build_insight_text,
+        )
+
+
+(
+    build_figure,
+    COMMODITIES,
+    EQUITIES,
+    FX,
+    INTERVAL_OPTIONS,
+    PERIOD_OPTIONS,
+    load_ohlc,
+    apply_demark,
+    build_insight_text,
+) = _import_dashboard_symbols()
 
 
 st.set_page_config(page_title="DeMark Market Dashboard", layout="wide")
