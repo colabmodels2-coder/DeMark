@@ -134,9 +134,8 @@ if not _check_password():
 
 st.title("📊 DeMark Market Dashboard")
 st.caption(
-    "**TD Sequential by Jason Perl** — Interactive daily market monitor for equities, FX, and commodities. "
-    "Based on 'DeMark Indicators' (Bloomberg Press, 2008). Shows setup counts, countdown counts, "
-    "perfection flags, deferred signals, TDST levels, and risk management guidance."
+    "**TD Sequential by Jason Perl** — Daily OHLC market structure monitor. "
+    "Setup counts (1-9), countdown counts (1-13), perfection flags, deferred states, TDST support/resistance, and exhaust detection."
 )
 
 with st.sidebar:
@@ -148,18 +147,6 @@ with st.sidebar:
     st.caption("Data interval: Daily OHLC only (1d)")
 
     st.divider()
-    st.header("📈 Legend")
-    st.markdown("""
-    - **1..9**: TD Setup counts on each bar
-    - **(1)..(13)**: TD Countdown counts on each qualifying bar
-    - **9**: Setup completion marker
-    - **13**: Countdown completion marker
-    - **13+**: Deferred countdown completion (+)
-    - **R**: Countdown recycle marker
-    - **↑** / **↓**: Setup perfection qualifiers
-    - **TDST**: Support/Resistance levels from setup extremes
-    - **Price style**: OHLC bars (not candles)
-    """)
 
 if not selected:
     st.info("👈 Select at least one symbol in the sidebar.")
@@ -223,19 +210,6 @@ if rows:
     st.dataframe(rows, use_container_width=True)
 
 st.divider()
-st.markdown("""
-### 📚 Methodology Reference
-This dashboard implements **TD Sequential** from Jason Perl's *DeMark Indicators* (Bloomberg Press, 2008), 
-which describes exhaustion-point identification through:
-- **Setup Phase**: 9-bar momentum sequences with 4-bar lookback
-- **Countdown Phase**: 13-bar trend sequences with 2-bar lookback
-- **TDST Levels**: Dynamic support/resistance from setup extremes
-- **Risk Management**: True-range-based stop placement
-- **Perfection & Deferral**: Qualifier rules for signal validity
-
-**Limitations**: DeMark implementations vary across platforms. This dashboard provides a transparent, editable baseline.
-Validate signals against your reference charts and adjust rules as needed.
-
----
-*Dashboard by Sean | Based on Jason Perl's DeMark Indicators methodology | Data from Yahoo Finance*
-""")
+st.markdown(
+    "*TD Sequential | Daily OHLC market structure monitor | Data from Yahoo Finance | Implementation: Jason Perl's DeMark Indicators*"
+)
