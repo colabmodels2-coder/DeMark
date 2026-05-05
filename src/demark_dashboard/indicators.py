@@ -31,12 +31,139 @@ def _price_flips(close: pd.Series) -> tuple[pd.Series, pd.Series]:
     return bullish_flip.fillna(False), bearish_flip.fillna(False)
 
 
-def _setup_counts(df: pd.DataFrame, bullish_flip: pd.Series, bearish_flip: pd.Series) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
+def _true_low(df: pd.DataFrame) -> pd.Series:
+    prev_close = df["Close"].shift(1)
+    return pd.concat([df["Low"], prev_close], axis=1).min(axis=1)
+
+
+def _true_high(df: pd.DataFrame) -> pd.Series:
+    prev_close = df["Close"].shift(1)
+    return pd.concat([df["High"], prev_close], axis=1).max(axis=1)
+
+
+def _collect_completed_setups(
+    df: pd.DataFrame,
+    setup: pd.Series,
+    setup_ext: pd.Series,
+    direction: str,
+) -> pd.DataFrame:
+    true_low = _true_low(df)
+    true_high = _true_high(df)
+    close = df["Close"]
+
+    records: list[dict[str, float | int | str]] = []
+    active_start: int | None = None
+    active_complete: int | None = None
+
+    for i in range(len(df)):
+        ext_value = int(setup_ext.iloc[i])
+
+        if ext_value == 1 and (i == 0 or int(setup_ext.iloc[i - 1]) == 0):
+            active_start = i
+            active_complete = None
+
+        if ext_value > 0 and int(setup.iloc[i]) == 9 and active_complete is None:
+            active_complete = i
+
+        if ext_value > 0 and (i == len(df) - 1 or int(setup_ext.iloc[i + 1]) == 0):
+            if active_start is not None and active_complete is not None:
+                window = slice(active_start, i + 1)
+                records.append(
+                    {
+                        "id": len(records) + 1,
+                        "direction": direction,
+                        "start_pos": active_start,
+                        "complete_pos": active_complete,
+                        "end_pos": i,
+                        "range_low": float(true_low.iloc[window].min()),
+                        "range_high": float(true_high.iloc[window].max()),
+                        "close_low": float(close.iloc[window].min()),
+                        "close_high": float(close.iloc[window].max()),
+                        "ext_bars": int(setup_ext.iloc[active_start : i + 1].max()),
+                    }
+                )
+            active_start = None
+            active_complete = None
+
+    if not records:
+        return pd.DataFrame(
+            columns=[
+                "id",
+                "direction",
+                "start_pos",
+                "complete_pos",
+                "end_pos",
+                "range_low",
+                "range_high",
+                "close_low",
+                "close_high",
+                "ext_bars",
+            ]
+        )
+
+    return pd.DataFrame.from_records(records)
+
+
+def _qualifier_action(
+    current_setup: pd.Series,
+    previous_setup: pd.Series | None,
+    opposite_setups: pd.DataFrame,
+) -> str:
+    if previous_setup is None:
+        return "start"
+
+    opposite_between = opposite_setups[
+        (opposite_setups["complete_pos"] > previous_setup["complete_pos"])
+        & (opposite_setups["complete_pos"] < current_setup["complete_pos"])
+    ]
+    if not opposite_between.empty:
+        return "start"
+
+    current_range = float(current_setup["range_high"] - current_setup["range_low"])
+    previous_range = float(previous_setup["range_high"] - previous_setup["range_low"])
+    phi = 1.618
+
+    closing_range_within = (
+        float(current_setup["close_low"]) >= float(previous_setup["range_low"])
+        and float(current_setup["close_high"]) <= float(previous_setup["range_high"])
+    )
+
+    if current_setup["direction"] == "buy":
+        price_extreme_within = (
+            float(previous_setup["range_low"])
+            <= float(current_setup["range_low"])
+            <= float(previous_setup["range_high"])
+        )
+    else:
+        price_extreme_within = (
+            float(previous_setup["range_low"])
+            <= float(current_setup["range_high"])
+            <= float(previous_setup["range_high"])
+        )
+
+    if closing_range_within and price_extreme_within:
+        return "qualifier_ii"
+
+    if current_range >= previous_range and current_range < phi * previous_range:
+        if current_range >= previous_range:
+            return "qualifier_i_replace"
+        return "qualifier_i_keep"
+
+    return "start"
+
+
+def _setup_counts(
+    df: pd.DataFrame,
+    bullish_flip: pd.Series,
+    bearish_flip: pd.Series,
+) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]:
     """
     TD Setup: 9 consecutive closes with correct relationship to close 4 bars earlier.
     Buy Setup: 9 closes < close[4 bars ago]
     Sell Setup: 9 closes > close[4 bars ago]
-    Perfection: Low/High of bar 8-9 more extreme than bars 6-7
+    Perfection: Low/High of bar 8-9 or a subsequent bar more extreme than bars 6-7.
+    Setup extension continues beyond 9 while the close-vs-close[4] condition persists.
+    Display counts remain capped at 9, but ext counts continue for recycle logic.
     """
     close = df["Close"]
     high = df["High"]
@@ -46,13 +173,17 @@ def _setup_counts(df: pd.DataFrame, bullish_flip: pd.Series, bearish_flip: pd.Se
     sell_setup = pd.Series(0, index=df.index, dtype="int64")
     buy_perfected = pd.Series(False, index=df.index)
     sell_perfected = pd.Series(False, index=df.index)
+    buy_setup_ext = pd.Series(0, index=df.index, dtype="int64")
+    sell_setup_ext = pd.Series(0, index=df.index, dtype="int64")
 
     buy_active = False
     sell_active = False
     bcount = 0
     scount = 0
-    buy_start_idx = 0
-    sell_start_idx = 0
+    buy_start_idx = -1
+    sell_start_idx = -1
+    buy_perfected_done = False
+    sell_perfected_done = False
 
     for i in range(len(df)):
         if i < 5:
@@ -64,7 +195,9 @@ def _setup_counts(df: pd.DataFrame, bullish_flip: pd.Series, bearish_flip: pd.Se
             sell_active = False
             bcount = 1
             buy_start_idx = i
+            buy_perfected_done = False
             buy_setup.iloc[i] = 1
+            buy_setup_ext.iloc[i] = 1
             continue
 
         # Start sell setup on bullish flip
@@ -73,57 +206,88 @@ def _setup_counts(df: pd.DataFrame, bullish_flip: pd.Series, bearish_flip: pd.Se
             buy_active = False
             scount = 1
             sell_start_idx = i
+            sell_perfected_done = False
             sell_setup.iloc[i] = 1
+            sell_setup_ext.iloc[i] = 1
             continue
 
         # Continue or reset buy setup
         if buy_active:
             if close.iloc[i] < close.iloc[i - 4]:
                 bcount += 1
-                buy_setup.iloc[i] = bcount
-                if bcount >= 9:
-                    buy_active = False
+                buy_setup_ext.iloc[i] = bcount
+                if bcount <= 9:
+                    buy_setup.iloc[i] = bcount
+
+                if bcount >= 9 and not buy_perfected_done and buy_start_idx >= 0:
+                    low_6_7 = min(low.iloc[buy_start_idx + 5], low.iloc[buy_start_idx + 6])
+                    if bcount == 9:
+                        low_8_9 = min(low.iloc[buy_start_idx + 7], low.iloc[buy_start_idx + 8])
+                        if low_8_9 <= low_6_7:
+                            buy_perfected.iloc[i] = True
+                            buy_perfected_done = True
+                    elif low.iloc[i] <= low_6_7:
+                        buy_perfected.iloc[i] = True
+                        buy_perfected_done = True
             else:
                 buy_active = False
                 bcount = 0
+                buy_start_idx = -1
+                buy_perfected_done = False
 
         # Continue or reset sell setup
         if sell_active:
             if close.iloc[i] > close.iloc[i - 4]:
                 scount += 1
-                sell_setup.iloc[i] = scount
-                if scount >= 9:
-                    sell_active = False
+                sell_setup_ext.iloc[i] = scount
+                if scount <= 9:
+                    sell_setup.iloc[i] = scount
+
+                if scount >= 9 and not sell_perfected_done and sell_start_idx >= 0:
+                    high_6_7 = max(high.iloc[sell_start_idx + 5], high.iloc[sell_start_idx + 6])
+                    if scount == 9:
+                        high_8_9 = max(high.iloc[sell_start_idx + 7], high.iloc[sell_start_idx + 8])
+                        if high_8_9 >= high_6_7:
+                            sell_perfected.iloc[i] = True
+                            sell_perfected_done = True
+                    elif high.iloc[i] >= high_6_7:
+                        sell_perfected.iloc[i] = True
+                        sell_perfected_done = True
             else:
                 sell_active = False
                 scount = 0
+                sell_start_idx = -1
+                sell_perfected_done = False
 
-    # Check for perfection: low/high of bars 8-9 more extreme than bars 6-7
-    for i in range(len(df)):
-        if buy_setup.iloc[i] == 9:
-            loc = i
-            if loc >= 8:
-                low_8_9 = min(low.iloc[loc - 1], low.iloc[loc])
-                low_6_7 = min(low.iloc[loc - 3], low.iloc[loc - 2])
-                if low_8_9 <= low_6_7:
-                    buy_perfected.iloc[i] = True
-
-        if sell_setup.iloc[i] == 9:
-            loc = i
-            if loc >= 8:
-                high_8_9 = max(high.iloc[loc - 1], high.iloc[loc])
-                high_6_7 = max(high.iloc[loc - 3], high.iloc[loc - 2])
-                if high_8_9 >= high_6_7:
-                    sell_perfected.iloc[i] = True
-
-    return buy_setup, sell_setup, buy_perfected, sell_perfected
+    return buy_setup, sell_setup, buy_perfected, sell_perfected, buy_setup_ext, sell_setup_ext
 
 
 def _countdowns(
     df: pd.DataFrame,
     buy_setup: pd.Series,
     sell_setup: pd.Series,
-) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]:
+    buy_setup_ext: pd.Series,
+    sell_setup_ext: pd.Series,
+    bullish_flip: pd.Series,
+    bearish_flip: pd.Series,
+) -> tuple[
+    pd.Series,
+    pd.Series,
+    pd.Series,
+    pd.Series,
+    pd.Series,
+    pd.Series,
+    pd.Series,
+    pd.Series,
+    pd.Series,
+    pd.Series,
+    pd.Series,
+    pd.Series,
+    pd.Series,
+    pd.Series,
+    pd.Series,
+    pd.Series,
+]:
     """
         TD Countdown: 13 bars comparing close to low/high 2 bars earlier.
         Buy Countdown: 13 closes <= low[2 bars ago]
@@ -146,6 +310,18 @@ def _countdowns(
     close = df["Close"]
     low = df["Low"]
     high = df["High"]
+    true_low = _true_low(df)
+    true_high = _true_high(df)
+
+    buy_setups_meta = _collect_completed_setups(df, buy_setup, buy_setup_ext, "buy")
+    sell_setups_meta = _collect_completed_setups(df, sell_setup, sell_setup_ext, "sell")
+
+    buy_setup_lookup = {
+        int(row["complete_pos"]): row for _, row in buy_setups_meta.iterrows()
+    }
+    sell_setup_lookup = {
+        int(row["complete_pos"]): row for _, row in sell_setups_meta.iterrows()
+    }
 
     buy_countdown = pd.Series(0, index=df.index, dtype="int64")
     sell_countdown = pd.Series(0, index=df.index, dtype="int64")
@@ -157,6 +333,12 @@ def _countdowns(
     sell_countdown_active = pd.Series(False, index=df.index)
     buy_deferred_active = pd.Series(False, index=df.index)
     sell_deferred_active = pd.Series(False, index=df.index)
+    buy_cancel_qualifier_i = pd.Series(False, index=df.index)
+    buy_cancel_qualifier_ii = pd.Series(False, index=df.index)
+    sell_cancel_qualifier_i = pd.Series(False, index=df.index)
+    sell_cancel_qualifier_ii = pd.Series(False, index=df.index)
+    buy_9139 = pd.Series(False, index=df.index)
+    sell_9139 = pd.Series(False, index=df.index)
 
     buy_trackers: list[dict] = []
     sell_trackers: list[dict] = []
@@ -234,6 +416,45 @@ def _countdowns(
 
         return printed_value, deferred_event
 
+    def _make_tracker(setup_row: pd.Series) -> dict:
+        return {
+            "count": 0,
+            "cd8_close": np.nan,
+            "awaiting_13": False,
+            "done": False,
+            "source_setup_id": int(setup_row["id"]),
+            "source_complete_pos": int(setup_row["complete_pos"]),
+            "source_start_pos": int(setup_row["start_pos"]),
+            "source_range_low": float(setup_row["range_low"]),
+            "source_range_high": float(setup_row["range_high"]),
+        }
+
+    def _resolve_nine_thirteen_nine(
+        setups_meta: pd.DataFrame,
+        countdown_13: pd.Series,
+        intervening_opposite_setup: pd.Series,
+        price_flip: pd.Series,
+        out_signal: pd.Series,
+    ) -> None:
+        countdown_positions = [pos for pos, value in enumerate(countdown_13) if int(value) == 13]
+        if not countdown_positions or setups_meta.empty:
+            return
+
+        for _, row in setups_meta.iterrows():
+            start_pos = int(row["start_pos"])
+            complete_pos = int(row["complete_pos"])
+            eligible = [pos for pos in countdown_positions if pos < start_pos]
+            if not eligible:
+                continue
+
+            countdown_pos = eligible[-1]
+            if intervening_opposite_setup.iloc[countdown_pos + 1 : start_pos].eq(9).any():
+                continue
+            if not price_flip.iloc[countdown_pos + 1 : start_pos].any():
+                continue
+
+            out_signal.iloc[complete_pos] = True
+
     for i in range(len(df)):
         if i < 2:
             continue
@@ -244,23 +465,62 @@ def _countdowns(
         if sell_setup.iloc[i] == 9 and buy_trackers:
             buy_trackers = []
 
-        # Same-direction Setup 9 recycles nearest active tracker (prevents tracker accumulation).
+        # Same-direction completed setups can either begin a new concurrent
+        # countdown, recycle the active setup via qualifier I, or leave the
+        # prior countdown intact via qualifier II.
         if buy_setup.iloc[i] == 9:
-            active_buy_idxs = [k for k, t in enumerate(buy_trackers) if not t["done"]]
-            if active_buy_idxs:
-                recycled_buy.iloc[i] = True
-                best_idx = max(active_buy_idxs, key=lambda k: _progress_score(buy_trackers[k]))
-                buy_trackers[best_idx] = {"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False}
-            else:
-                buy_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
+            current_setup = buy_setup_lookup.get(i)
+            if current_setup is not None:
+                previous_setup = None
+                previous_rows = buy_setups_meta[buy_setups_meta["complete_pos"] < i]
+                if not previous_rows.empty:
+                    previous_setup = previous_rows.iloc[-1]
+
+                action = _qualifier_action(current_setup, previous_setup, sell_setups_meta)
+                if action == "qualifier_i_replace":
+                    buy_cancel_qualifier_i.iloc[i] = True
+                    buy_trackers = [_make_tracker(current_setup)]
+                elif action == "qualifier_ii":
+                    buy_cancel_qualifier_ii.iloc[i] = True
+                else:
+                    buy_trackers.append(_make_tracker(current_setup))
         if sell_setup.iloc[i] == 9:
-            active_sell_idxs = [k for k, t in enumerate(sell_trackers) if not t["done"]]
-            if active_sell_idxs:
-                recycled_sell.iloc[i] = True
-                best_idx = max(active_sell_idxs, key=lambda k: _progress_score(sell_trackers[k]))
-                sell_trackers[best_idx] = {"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False}
-            else:
-                sell_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
+            current_setup = sell_setup_lookup.get(i)
+            if current_setup is not None:
+                previous_setup = None
+                previous_rows = sell_setups_meta[sell_setups_meta["complete_pos"] < i]
+                if not previous_rows.empty:
+                    previous_setup = previous_rows.iloc[-1]
+
+                action = _qualifier_action(current_setup, previous_setup, buy_setups_meta)
+                if action == "qualifier_i_replace":
+                    sell_cancel_qualifier_i.iloc[i] = True
+                    sell_trackers = [_make_tracker(current_setup)]
+                elif action == "qualifier_ii":
+                    sell_cancel_qualifier_ii.iloc[i] = True
+                else:
+                    sell_trackers.append(_make_tracker(current_setup))
+
+        buy_trackers = [
+            tracker
+            for tracker in buy_trackers
+            if not (true_low.iloc[i] > tracker["source_range_high"])
+        ]
+        sell_trackers = [
+            tracker
+            for tracker in sell_trackers
+            if not (true_high.iloc[i] < tracker["source_range_low"])
+        ]
+
+        # Recycle qualifier: a same-direction setup extending to 18 bars negates the
+        # developing countdown and recycles the directional exhaustion process.
+        if buy_setup_ext.iloc[i] >= 18 and buy_trackers:
+            recycled_buy.iloc[i] = True
+            buy_trackers = []
+
+        if sell_setup_ext.iloc[i] >= 18 and sell_trackers:
+            recycled_sell.iloc[i] = True
+            sell_trackers = []
 
         buy_events: list[tuple[int | None, bool]] = []
         for tracker in buy_trackers:
@@ -296,12 +556,30 @@ def _countdowns(
         buy_trackers = [t for t in buy_trackers if not t["done"]]
         sell_trackers = [t for t in sell_trackers if not t["done"]]
 
+    _resolve_nine_thirteen_nine(
+        buy_setups_meta,
+        buy_countdown,
+        sell_setup,
+        bullish_flip,
+        buy_9139,
+    )
+    _resolve_nine_thirteen_nine(
+        sell_setups_meta,
+        sell_countdown,
+        buy_setup,
+        bearish_flip,
+        sell_9139,
+    )
+
     return (
         buy_countdown, sell_countdown,
         deferred_buy, deferred_sell,
         recycled_buy, recycled_sell,
         buy_countdown_active, sell_countdown_active,
         buy_deferred_active, sell_deferred_active,
+        buy_cancel_qualifier_i, buy_cancel_qualifier_ii,
+        sell_cancel_qualifier_i, sell_cancel_qualifier_ii,
+        buy_9139, sell_9139,
     )
 
 
@@ -316,14 +594,16 @@ def _tdst_levels(df: pd.DataFrame, buy_setup: pd.Series, sell_setup: pd.Series) 
 
     curr_buy = np.nan
     curr_sell = np.nan
+    true_low = _true_low(df)
+    true_high = _true_high(df)
 
     for i in range(len(df)):
         if buy_setup.iloc[i] == 9:
-            window = df.iloc[max(0, i - 8) : i + 1]
-            curr_buy = float(window["Low"].min())
+            window = slice(max(0, i - 8), i + 1)
+            curr_buy = float(true_low.iloc[window].min())
         if sell_setup.iloc[i] == 9:
-            window = df.iloc[max(0, i - 8) : i + 1]
-            curr_sell = float(window["High"].max())
+            window = slice(max(0, i - 8), i + 1)
+            curr_sell = float(true_high.iloc[window].max())
 
         tdst_buy.iloc[i] = curr_buy
         tdst_sell.iloc[i] = curr_sell
@@ -688,11 +968,13 @@ def apply_demark(df: pd.DataFrame) -> pd.DataFrame:
     out["bearish_flip"] = bearish_flip
 
     # Setup counts
-    buy_setup, sell_setup, buy_perfected, sell_perfected = _setup_counts(out, bullish_flip, bearish_flip)
+    buy_setup, sell_setup, buy_perfected, sell_perfected, buy_setup_ext, sell_setup_ext = _setup_counts(out, bullish_flip, bearish_flip)
     out["buy_setup"] = buy_setup
     out["sell_setup"] = sell_setup
     out["buy_perfected"] = buy_perfected
     out["sell_perfected"] = sell_perfected
+    out["buy_setup_ext"] = buy_setup_ext
+    out["sell_setup_ext"] = sell_setup_ext
 
     # Countdown counts
     (
@@ -701,7 +983,13 @@ def apply_demark(df: pd.DataFrame) -> pd.DataFrame:
         recycled_buy, recycled_sell,
         buy_countdown_active, sell_countdown_active,
         buy_deferred_active, sell_deferred_active,
-    ) = _countdowns(out, buy_setup, sell_setup)
+        buy_cancel_qualifier_i,
+        buy_cancel_qualifier_ii,
+        sell_cancel_qualifier_i,
+        sell_cancel_qualifier_ii,
+        buy_9139,
+        sell_9139,
+    ) = _countdowns(out, buy_setup, sell_setup, buy_setup_ext, sell_setup_ext, bullish_flip, bearish_flip)
     out["buy_countdown"] = buy_countdown
     out["sell_countdown"] = sell_countdown
     out["deferred_buy"] = deferred_buy
@@ -712,6 +1000,12 @@ def apply_demark(df: pd.DataFrame) -> pd.DataFrame:
     out["sell_countdown_active"] = sell_countdown_active
     out["buy_deferred_active"] = buy_deferred_active
     out["sell_deferred_active"] = sell_deferred_active
+    out["buy_cancel_qualifier_i"] = buy_cancel_qualifier_i
+    out["buy_cancel_qualifier_ii"] = buy_cancel_qualifier_ii
+    out["sell_cancel_qualifier_i"] = sell_cancel_qualifier_i
+    out["sell_cancel_qualifier_ii"] = sell_cancel_qualifier_ii
+    out["buy_9139"] = buy_9139
+    out["sell_9139"] = sell_9139
 
     # TDST levels
     tdst_buy, tdst_sell = _tdst_levels(out, buy_setup, sell_setup)
