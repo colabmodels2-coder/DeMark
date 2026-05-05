@@ -217,6 +217,9 @@ def _countdowns(
         Deferred (13+): bar 13 close condition is met but bar-13 extreme vs close[8]
         fails. Countdown remains in awaiting state until both conditions are met.
 
+        Recycle (R): if a same-direction Setup extends to 18 bars while the
+        countdown is still incomplete, that countdown is recycled.
+
         Returns:
             buy_countdown, sell_countdown,
             deferred_buy (+), deferred_sell (+),
@@ -241,8 +244,67 @@ def _countdowns(
 
     buy_trackers: list[dict] = []
     sell_trackers: list[dict] = []
-    last_buy_13_idx = None
-    last_sell_13_idx = None
+    RECYCLE_SETUP_EXTENSION = 18
+    PHI = 1.618
+
+    # Track setup-range contexts to evaluate Cancellation Qualifier I/II.
+    buy_setup_ctxs: list[dict] = []
+    sell_setup_ctxs: list[dict] = []
+
+    buy_curr_ctx: dict | None = None
+    sell_curr_ctx: dict | None = None
+    last_buy_setup9_idx: int | None = None
+    last_sell_setup9_idx: int | None = None
+
+    def _new_setup_ctx(i: int) -> dict:
+        return {
+            "start": i,
+            "end": i,
+            "true_high": true_high,
+            "true_low": true_low,
+            "close_high": float(close.iloc[i]),
+            "close_low": float(close.iloc[i]),
+            "completed9": False,
+        }
+
+    def _update_setup_ctx(ctx: dict, i: int) -> None:
+        ctx["end"] = i
+        ctx["true_high"] = max(float(ctx["true_high"]), true_high)
+        ctx["true_low"] = min(float(ctx["true_low"]), true_low)
+        c = float(close.iloc[i])
+        ctx["close_high"] = max(float(ctx["close_high"]), c)
+        ctx["close_low"] = min(float(ctx["close_low"]), c)
+
+    def _ctx_range(ctx: dict) -> float:
+        return float(ctx["true_high"]) - float(ctx["true_low"])
+
+    def _within(outer_low: float, outer_high: float, inner_low: float, inner_high: float) -> bool:
+        return inner_low >= outer_low and inner_high <= outer_high
+
+    def _evaluate_qualifiers(prev_ctx: dict, curr_ctx: dict) -> tuple[bool, bool]:
+        """
+        Return (qualifier_i, qualifier_ii).
+
+        Qualifier I:
+          curr_range >= prev_range and curr_range < 1.618 * prev_range
+        Qualifier II (setup within setup):
+          curr closing range and curr true range are both within prior true range.
+        """
+        prev_range = _ctx_range(prev_ctx)
+        curr_range = _ctx_range(curr_ctx)
+        qualifier_i = prev_range > 0 and (curr_range >= prev_range) and (curr_range < PHI * prev_range)
+        qualifier_ii = _within(
+            float(prev_ctx["true_low"]),
+            float(prev_ctx["true_high"]),
+            float(curr_ctx["close_low"]),
+            float(curr_ctx["close_high"]),
+        ) and _within(
+            float(prev_ctx["true_low"]),
+            float(prev_ctx["true_high"]),
+            float(curr_ctx["true_low"]),
+            float(curr_ctx["true_high"]),
+        )
+        return qualifier_i, qualifier_ii
 
     # Gating policy for hidden same-direction trackers:
     # Avoid spawning unlimited overlapping countdowns (which can overproduce 13s),
@@ -338,11 +400,35 @@ def _countdowns(
         true_low = min(float(low.iloc[i]), float(close.iloc[i - 1]))
         true_high = max(float(high.iloc[i]), float(close.iloc[i - 1]))
 
+        # Maintain setup context ranges (including extension beyond 9 until extinguished).
+        if buy_setup_ext.iloc[i] == 1:
+            buy_curr_ctx = _new_setup_ctx(i)
+        elif buy_setup_ext.iloc[i] > 1 and buy_curr_ctx is not None:
+            _update_setup_ctx(buy_curr_ctx, i)
+        elif buy_setup_ext.iloc[i] == 0 and buy_curr_ctx is not None:
+            buy_curr_ctx = None
+
+        if sell_setup_ext.iloc[i] == 1:
+            sell_curr_ctx = _new_setup_ctx(i)
+        elif sell_setup_ext.iloc[i] > 1 and sell_curr_ctx is not None:
+            _update_setup_ctx(sell_curr_ctx, i)
+        elif sell_setup_ext.iloc[i] == 0 and sell_curr_ctx is not None:
+            sell_curr_ctx = None
+
         # TDST cancellation of incomplete countdowns.
         if buy_trackers and pd.notna(tdst_buy.iloc[i]) and true_low > float(tdst_buy.iloc[i]):
             buy_trackers = []
         if sell_trackers and pd.notna(tdst_sell.iloc[i]) and true_high < float(tdst_sell.iloc[i]):
             sell_trackers = []
+
+        # Recycle qualifier from TD Sequential: if a same-direction Setup extends
+        # to 18 while countdown is still developing, recycle that countdown.
+        if buy_trackers and buy_setup_ext.iloc[i] >= RECYCLE_SETUP_EXTENSION:
+            buy_trackers = []
+            recycled_buy.iloc[i] = True
+        if sell_trackers and sell_setup_ext.iloc[i] >= RECYCLE_SETUP_EXTENSION:
+            sell_trackers = []
+            recycled_sell.iloc[i] = True
 
         # Opposite-direction Setup 9 cancels existing background trackers.
         if buy_setup.iloc[i] == 9 and sell_trackers:
@@ -350,13 +436,52 @@ def _countdowns(
         if sell_setup.iloc[i] == 9 and buy_trackers:
             buy_trackers = []
 
-        # Start a new background tracker on every Setup 9.
+        # Start/evaluate same-direction setup interactions on Setup 9.
         if buy_setup.iloc[i] == 9:
-            if _can_spawn_same_direction_tracker(buy_trackers):
-                buy_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
+            if buy_curr_ctx is not None:
+                buy_curr_ctx["completed9"] = True
+                buy_setup_ctxs.append(buy_curr_ctx.copy())
+                curr_ctx = buy_setup_ctxs[-1]
+                prev_ctx = buy_setup_ctxs[-2] if len(buy_setup_ctxs) >= 2 else None
+
+                qualifier_i = False
+                qualifier_ii = False
+                if prev_ctx is not None and (last_sell_setup9_idx is None or last_sell_setup9_idx < int(curr_ctx["start"])):
+                    qualifier_i, qualifier_ii = _evaluate_qualifiers(prev_ctx, curr_ctx)
+
+                if qualifier_i and buy_trackers:
+                    buy_trackers = []
+                    recycled_buy.iloc[i] = True
+
+                if not qualifier_ii and _can_spawn_same_direction_tracker(buy_trackers):
+                    buy_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
+            else:
+                if _can_spawn_same_direction_tracker(buy_trackers):
+                    buy_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
+            last_buy_setup9_idx = i
+
         if sell_setup.iloc[i] == 9:
-            if _can_spawn_same_direction_tracker(sell_trackers):
-                sell_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
+            if sell_curr_ctx is not None:
+                sell_curr_ctx["completed9"] = True
+                sell_setup_ctxs.append(sell_curr_ctx.copy())
+                curr_ctx = sell_setup_ctxs[-1]
+                prev_ctx = sell_setup_ctxs[-2] if len(sell_setup_ctxs) >= 2 else None
+
+                qualifier_i = False
+                qualifier_ii = False
+                if prev_ctx is not None and (last_buy_setup9_idx is None or last_buy_setup9_idx < int(curr_ctx["start"])):
+                    qualifier_i, qualifier_ii = _evaluate_qualifiers(prev_ctx, curr_ctx)
+
+                if qualifier_i and sell_trackers:
+                    sell_trackers = []
+                    recycled_sell.iloc[i] = True
+
+                if not qualifier_ii and _can_spawn_same_direction_tracker(sell_trackers):
+                    sell_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
+            else:
+                if _can_spawn_same_direction_tracker(sell_trackers):
+                    sell_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
+            last_sell_setup9_idx = i
 
         buy_events: list[tuple[int | None, bool]] = []
         for tracker in buy_trackers:
@@ -372,8 +497,6 @@ def _countdowns(
             buy_print, buy_deferred = buy_events[buy_best_idx]
             if buy_print is not None:
                 buy_countdown.iloc[i] = int(buy_print)
-                if int(buy_print) == 13:
-                    last_buy_13_idx = df.index[i]
             if buy_deferred:
                 deferred_buy.iloc[i] = True
             buy_deferred_active.iloc[i] = bool(buy_trackers[buy_best_idx]["awaiting_13"])
@@ -383,23 +506,9 @@ def _countdowns(
             sell_print, sell_deferred = sell_events[sell_best_idx]
             if sell_print is not None:
                 sell_countdown.iloc[i] = int(sell_print)
-                if int(sell_print) == 13:
-                    last_sell_13_idx = df.index[i]
             if sell_deferred:
                 deferred_sell.iloc[i] = True
             sell_deferred_active.iloc[i] = bool(sell_trackers[sell_best_idx]["awaiting_13"])
-
-        # Recycle applies to a completed 13 when a subsequent overlapping same-direction
-        # Setup reaches 22 (default recycle threshold in the official implementation).
-        if last_buy_13_idx is not None and buy_setup_ext.iloc[i] >= 22:
-            buy_countdown.loc[last_buy_13_idx] = 0
-            recycled_buy.loc[last_buy_13_idx] = True
-            last_buy_13_idx = None
-
-        if last_sell_13_idx is not None and sell_setup_ext.iloc[i] >= 22:
-            sell_countdown.loc[last_sell_13_idx] = 0
-            recycled_sell.loc[last_sell_13_idx] = True
-            last_sell_13_idx = None
 
         buy_countdown_active.iloc[i] = any(not t["done"] for t in buy_trackers)
         sell_countdown_active.iloc[i] = any(not t["done"] for t in sell_trackers)
