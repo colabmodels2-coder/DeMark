@@ -244,15 +244,23 @@ def _countdowns(
         if sell_setup.iloc[i] == 9 and buy_trackers:
             buy_trackers = []
 
-        # Start a new background tracker on every Setup 9.
+        # Same-direction Setup 9 recycles nearest active tracker (prevents tracker accumulation).
         if buy_setup.iloc[i] == 9:
-            if any(not t["done"] for t in buy_trackers):
+            active_buy_idxs = [k for k, t in enumerate(buy_trackers) if not t["done"]]
+            if active_buy_idxs:
                 recycled_buy.iloc[i] = True
-            buy_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
+                best_idx = max(active_buy_idxs, key=lambda k: _progress_score(buy_trackers[k]))
+                buy_trackers[best_idx] = {"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False}
+            else:
+                buy_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
         if sell_setup.iloc[i] == 9:
-            if any(not t["done"] for t in sell_trackers):
+            active_sell_idxs = [k for k, t in enumerate(sell_trackers) if not t["done"]]
+            if active_sell_idxs:
                 recycled_sell.iloc[i] = True
-            sell_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
+                best_idx = max(active_sell_idxs, key=lambda k: _progress_score(sell_trackers[k]))
+                sell_trackers[best_idx] = {"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False}
+            else:
+                sell_trackers.append({"count": 0, "cd8_close": np.nan, "awaiting_13": False, "done": False})
 
         buy_events: list[tuple[int | None, bool]] = []
         for tracker in buy_trackers:
