@@ -91,7 +91,7 @@ st.set_page_config(page_title="DeMark Market Dashboard", layout="wide")
 
 st.title("📊 DeMark Market Dashboard")
 st.caption(
-    "**TD Sequential by Jason Perl** — Interactive market monitor for equities, FX, and commodities. "
+    "**TD Sequential by Jason Perl** — Interactive daily market monitor for equities, FX, and commodities. "
     "Based on 'DeMark Indicators' (Bloomberg Press, 2008). Shows setup counts, countdown counts, "
     "perfection flags, deferred signals, TDST levels, and risk management guidance."
 )
@@ -109,9 +109,10 @@ with st.sidebar:
     else:
         symbol_pool = EQUITIES[:4] + FX[:3] + COMMODITIES[:3]
 
-    selected = st.multiselect("Symbols", symbol_pool, default=symbol_pool[:3])
+    selected = st.multiselect("Symbols", symbol_pool, default=symbol_pool[:1], max_selections=4)
     period = st.selectbox("Period", PERIOD_OPTIONS, index=1)
-    interval = st.selectbox("Interval", INTERVAL_OPTIONS, index=0)
+    interval = "1d"
+    st.caption("Data interval: Daily OHLC only (1d)")
 
     st.divider()
     st.header("📈 Legend")
@@ -126,6 +127,9 @@ with st.sidebar:
 if not selected:
     st.info("👈 Select at least one symbol in the sidebar.")
     st.stop()
+
+if len(selected) > 3:
+    st.warning("Selected many symbols. If Yahoo rate-limits, reduce to 1-3 symbols for more reliable live data.")
 
 # Display charts and signals
 rows = []
