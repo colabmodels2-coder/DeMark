@@ -92,10 +92,21 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
 
     lines.append("")
     lines.append("### Countdown Phase (1 to 13)")
+    lines.append("⚠️ **Mutual Exclusivity Rule**: Only ONE active countdown direction at a time.")
+    lines.append("When an opposite-direction Setup 9 completes, it immediately cancels the prior countdown.")
+    lines.append("")
 
-    if latest_buy_cd_print > 0:
+    # Determine active countdown direction
+    has_active_buy_cd = latest_buy_cd_print > 0 or deferred_buy
+    has_active_sell_cd = latest_sell_cd_print > 0 or deferred_sell
+    
+    if has_active_buy_cd and has_active_sell_cd:
+        # Should never happen with corrected rules, but log if it does
+        lines.append("⚠️ **ALERT**: Both buy and sell countdowns detected. Review data integrity.")
+    
+    if has_active_buy_cd:
         lines.append(
-            f"🟢 **Buy Countdown Sequence**: last qualified print **{latest_buy_cd_print}/13** on "
+            f"🟢 **BUY COUNTDOWN (ACTIVE)**: last qualified print **{latest_buy_cd_print}/13** on "
             f"**{_fmt_idx(latest_buy_cd_date)}** ({latest_buy_cd_bars_ago} bars ago)."
         )
         if latest_buy_cd_bars_ago and latest_buy_cd_bars_ago > 0:
@@ -103,42 +114,64 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
         if deferred_buy:
             lines.append("🟢 **Buy Countdown**: 12+ (13+ Deferred)")
             lines.append("   → The sequence reached deferred status; condition for a qualified 13 is still outstanding.")
+            lines.append("   → Market must trade below Close[8] reference while maintaining the countdown condition to complete.")
         else:
             if latest_buy_cd_print >= 10:
-                lines.append("   → Late-stage Countdown. Market is in potential exhaustion territory; avoid chasing directional extension.")
+                lines.append("   → Late-stage Countdown. Market is in potential exhaustion territory; avoid chasing downside extension.")
+                lines.append("   → Risk of correction or consolidation rise significantly in bars 10-13 range.")
             if latest_buy_cd_print == 13:
-                lines.append("   → **Buy Countdown 13 complete.** Reversal risk rises, especially if price action stabilizes above downside extremes.")
+                lines.append("   → **Buy Countdown 13 COMPLETE.** Reversal risk rises; market has given a structural exhaustion signal.")
                 if pd.notna(tdst_buy):
-                    lines.append(f"   → Reference TDST support at {float(tdst_buy):,.2f} for structure and invalidation context.")
-
-    if latest_sell_cd_print > 0:
+                    lines.append(f"   → Reference TDST support at {float(tdst_buy):,.2f} — important structural level for position sizing and invalidation.")
+        
+        # Check if opposite setup is developing (which would cancel this)
+        if sell_setup > 0:
+            lines.append(f"   → ⚠️ Note: Sell Setup {sell_setup}/9 is developing. If it completes to 9, it will cancel this Buy Countdown.")
+    
+    elif has_active_sell_cd:
         lines.append(
-            f"🔴 **Sell Countdown Sequence**: last qualified print **{latest_sell_cd_print}/13** on "
+            f"🔴 **SELL COUNTDOWN (ACTIVE)**: last qualified print **{latest_sell_cd_print}/13** on "
             f"**{_fmt_idx(latest_sell_cd_date)}** ({latest_sell_cd_bars_ago} bars ago)."
         )
         if latest_sell_cd_bars_ago and latest_sell_cd_bars_ago > 0:
-            lines.append("   → Countdown prints can be non-consecutive; intervening bars may simply fail qualification.")
+            lines.append("   → Countdown prints are non-consecutive by design; intervening bars simply fail qualification.")
         if deferred_sell:
             lines.append("🔴 **Sell Countdown**: 12+ (13+ Deferred)")
             lines.append("   → The sequence reached deferred status; qualified 13 conditions remain incomplete.")
+            lines.append("   → Market must trade above Close[8] reference while maintaining the countdown condition to complete.")
         else:
             if latest_sell_cd_print >= 10:
-                lines.append("   → Late-stage Countdown. Upside extension is vulnerable to exhaustion and two-sided volatility.")
+                lines.append("   → Late-stage Countdown. Upside extension is vulnerable to exhaustion and mean reversion.")
+                lines.append("   → Market structure enters critical risk zone; confirm before extending positions.")
             if latest_sell_cd_print == 13:
-                lines.append("   → **Sell Countdown 13 complete.** Uptrend persistence should now be questioned unless structure quickly reasserts.")
+                lines.append("   → **Sell Countdown 13 COMPLETE.** Uptrend exhaustion signal has been generated.")
                 if pd.notna(tdst_sell):
-                    lines.append(f"   → Reference TDST resistance at {float(tdst_sell):,.2f} for structural confirmation.")
-
-    if latest_buy_cd_print == 0 and latest_sell_cd_print == 0 and not deferred_buy and not deferred_sell:
-        lines.append("No active Countdown sequence. Setup completion and follow-through criteria remain the priority.")
+                    lines.append(f"   → Reference TDST resistance at {float(tdst_sell):,.2f} — key structural level for risk management.")
+        
+        # Check if opposite setup is developing (which would cancel this)
+        if buy_setup > 0:
+            lines.append(f"   → ⚠️ Note: Buy Setup {buy_setup}/9 is developing. If it completes to 9, it will cancel this Sell Countdown.")
+    
+    else:
+        # No active countdown
+        if buy_setup > 0 or sell_setup > 0:
+            lines.append("No active Countdown at present. Waiting for Setup 9 completion to initiate next direction.")
+            if buy_setup > 0:
+                lines.append(f"   → Buy Setup {buy_setup}/9 is developing; once it completes to 9, Buy Countdown will begin.")
+            if sell_setup > 0:
+                lines.append(f"   → Sell Setup {sell_setup}/9 is developing; once it completes to 9, Sell Countdown will begin.")
+        else:
+            lines.append("No active Countdown sequence. Monitor for Price Flip and Setup initiation.")
 
     if recycled_buy:
         lines.append("🔁 **Buy Countdown Recycled (R)**")
-        lines.append("   → A new Buy Setup 9 emerged before a qualified 13, forcing a recycle. Signal timing is extended.")
+        lines.append("   → A new Buy Setup 9 occurred while Buy Countdown was active (before 13 completion), forcing recycle.")
+        lines.append("   → Recycle resets timing; new countdown begins from bar 1. Structural setup quality is reaffirmed, but exhaustion timeline extends.")
 
     if recycled_sell:
         lines.append("🔁 **Sell Countdown Recycled (R)**")
-        lines.append("   → A new Sell Setup 9 emerged before a qualified 13, forcing a recycle. Patience remains essential.")
+        lines.append("   → A new Sell Setup 9 occurred while Sell Countdown was active (before 13 completion), forcing recycle.")
+        lines.append("   → Recycle resets timing; new countdown begins from bar 1. Patience and discipline are essential; reversal signals gain conviction when 13 ultimately completes.")
 
     lines.append("")
     lines.append("### TDST Structure (Support / Resistance)")
@@ -169,10 +202,13 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
 
     lines.append("")
     lines.append("### Process Notes (Per Sequential Discipline)")
-    lines.append("1. Treat Setup 9 as context, not an automatic reversal command.")
-    lines.append("2. Treat Countdown 13 as exhaustion evidence, then demand confirmation from price behavior.")
-    lines.append("3. Use TDST to frame whether the market is structurally supportive or hostile to the signal direction.")
-    lines.append("4. Respect deferred (13+) and recycle (R) outcomes as warnings that timing has extended.")
-    lines.append("5. Size and risk should be calibrated to volatility and structural invalidation levels.")
+    lines.append("1. **One direction at a time**: Opposite-direction Setup 9 immediately cancels prior countdown. Track which direction is active.")
+    lines.append("2. **Setup 9 as context**: Marks structural maturity and initiates Countdown sequence. Not a reversal trigger by itself.")
+    lines.append("3. **Countdown 13 as exhaustion**: Represents terminal depletion; treat as evidence, then demand price confirmation before action.")
+    lines.append("4. **Bar-8 reference is critical**: Countdown 13 must occur with Low[13] ≤ Close[8] (not Low[8]). This ensures signal integrity.")
+    lines.append("5. **Deferred (13+) states**: When 13 fails the Close[8] check, countdown pauses at bar 12 with '+' marker pending condition completion.")
+    lines.append("6. **Recycle (R)**: New same-direction Setup 9 during active countdown extends timing; different from direction switch (mutual exclusivity).")
+    lines.append("7. **TDST structure**: Use support/resistance zones to validate whether sequential signals align with structural tone.")
+    lines.append("8. **Size and risk**: Calibrate to volatility and TDST invalidation levels. Countdown timing alone does not justify leveraged positions.")
 
     return "\n".join(lines)
