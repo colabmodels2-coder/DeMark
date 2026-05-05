@@ -50,6 +50,41 @@ def build_figure(
     # TD SEQUENTIAL INDICATORS (Optional)
     # ========================================================================
     if show_td_sequential:
+        def _add_tdst_segments(series: pd.Series, name: str, color: str) -> None:
+            idx = list(series.index)
+            vals = list(series.values)
+            n = len(vals)
+            i = 0
+            show_legend = True
+
+            while i < n:
+                if pd.isna(vals[i]):
+                    i += 1
+                    continue
+
+                level = vals[i]
+                j = i
+                while j + 1 < n and pd.notna(vals[j + 1]) and vals[j + 1] == level:
+                    j += 1
+
+                fig.add_trace(
+                    go.Scatter(
+                        x=idx[i : j + 1],
+                        y=[level] * (j - i + 1),
+                        mode="lines",
+                        name=name,
+                        legendgroup=name,
+                        showlegend=show_legend,
+                        line=dict(color=color, width=1.5, dash="dot"),
+                        hovertext=[f"{name}: {float(level):,.2f}"] * (j - i + 1),
+                        hoverinfo="x+text",
+                    ),
+                    row=1,
+                    col=1,
+                )
+                show_legend = False
+                i = j + 1
+
         # Full Setup counts 1-9
         buy_setup = df[df["buy_setup"] > 0]
         if not buy_setup.empty:
@@ -124,33 +159,9 @@ def build_figure(
                 col=1,
             )
 
-        # TDST support (Buy Support)
-        fig.add_trace(
-            go.Scatter(
-                x=df.index,
-                y=df["tdst_buy"],
-                mode="lines",
-                name="TDST Buy Support",
-                line=dict(color="#0ea5e9", width=1.5, dash="dot"),
-                fill=None,
-            ),
-            row=1,
-            col=1,
-        )
-
-        # TDST resistance (Sell Resistance)
-        fig.add_trace(
-            go.Scatter(
-                x=df.index,
-                y=df["tdst_sell"],
-                mode="lines",
-                name="TDST Sell Resistance",
-                line=dict(color="#f97316", width=1.5, dash="dot"),
-                fill=None,
-            ),
-            row=1,
-            col=1,
-        )
+        # TDST support/resistance as finite segments; each level stops when a new one forms.
+        _add_tdst_segments(df["tdst_buy"], "TDST Buy Support", "#0ea5e9")
+        _add_tdst_segments(df["tdst_sell"], "TDST Sell Resistance", "#f97316")
 
         # Buy Setup completion (9)
         buy9 = df[df["buy_setup"] == 9]
