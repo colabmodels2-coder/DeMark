@@ -347,10 +347,12 @@ def build_figure(
     # TD D-WAVE INDICATORS (Optional)
     # ========================================================================
     if show_td_wave:
-        # Waves 1-5 (Impulse)
+        # Waves 1-5 (Impulse pivots)
         for wave_col, wave_name, color in [
             ("wave_1", "Wave 1", "#3b82f6"),
+            ("wave_2", "Wave 2", "#2563eb"),
             ("wave_3", "Wave 3", "#3b82f6"),
+            ("wave_4", "Wave 4", "#2563eb"),
             ("wave_5", "Wave 5", "#3b82f6"),
         ]:
             wave_data = df[df[wave_col].notna()]
@@ -362,19 +364,20 @@ def build_figure(
                         mode="markers+text",
                         marker=dict(size=12, color=color, symbol="circle"),
                         text=[wave_name.split()[-1]] * len(wave_data),
-                        textposition="top center",
+                        textposition="middle right",
                         textfont=dict(size=11, color=color, family="monospace"),
                         name=wave_name,
-                        hovertext=[f"{wave_name} peak" for _ in wave_data.index],
+                        hovertext=[f"{wave_name} pivot" for _ in wave_data.index],
                         hoverinfo="x+text+y",
                     ),
                     row=1,
                     col=1,
                 )
 
-        # Waves A-B-C (Correction)
+        # Waves A-B-C (Corrective pivots)
         for wave_col, wave_name, color in [
             ("wave_a", "Wave A", "#ef4444"),
+            ("wave_b", "Wave B", "#f97316"),
             ("wave_c", "Wave C", "#ef4444"),
         ]:
             wave_data = df[df[wave_col].notna()]
@@ -386,10 +389,10 @@ def build_figure(
                         mode="markers+text",
                         marker=dict(size=12, color=color, symbol="circle"),
                         text=[wave_name.split()[-1]] * len(wave_data),
-                        textposition="bottom center",
+                        textposition="middle left",
                         textfont=dict(size=11, color=color, family="monospace"),
                         name=wave_name,
-                        hovertext=[f"{wave_name} trough" for _ in wave_data.index],
+                        hovertext=[f"{wave_name} pivot" for _ in wave_data.index],
                         hoverinfo="x+text+y",
                     ),
                     row=1,
@@ -397,6 +400,22 @@ def build_figure(
                 )
 
         # Fibonacci Projections
+        wave2_proj = df[df["wave_2_proj"].notna()]
+        if not wave2_proj.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=wave2_proj.index,
+                    y=wave2_proj["wave_2_proj"],
+                    mode="lines",
+                    name="Wave 2 Target",
+                    line=dict(color="#1d4ed8", width=1.5, dash="dot"),
+                    hovertext=["Wave 2 Fibonacci target" for _ in wave2_proj.index],
+                    hoverinfo="x+y",
+                ),
+                row=1,
+                col=1,
+            )
+
         wave3_proj = df[df["wave_3_proj"].notna()]
         if not wave3_proj.empty:
             fig.add_trace(
@@ -407,6 +426,22 @@ def build_figure(
                     name="Wave 3 Target",
                     line=dict(color="#3b82f6", width=2, dash="dash"),
                     hovertext=["Wave 3 Fibonacci target" for _ in wave3_proj.index],
+                    hoverinfo="x+y",
+                ),
+                row=1,
+                col=1,
+            )
+
+        wave4_proj = df[df["wave_4_proj"].notna()]
+        if not wave4_proj.empty:
+            fig.add_trace(
+                go.Scatter(
+                    x=wave4_proj.index,
+                    y=wave4_proj["wave_4_proj"],
+                    mode="lines",
+                    name="Wave 4 Target",
+                    line=dict(color="#2563eb", width=1.5, dash="dot"),
+                    hovertext=["Wave 4 Fibonacci target" for _ in wave4_proj.index],
                     hoverinfo="x+y",
                 ),
                 row=1,
