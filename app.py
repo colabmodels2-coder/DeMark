@@ -98,18 +98,8 @@ st.caption(
 
 with st.sidebar:
     st.header("⚙️ Configuration")
-    market = st.selectbox("Asset Class", ["Equities", "FX", "Commodities", "Mixed"])
-
-    if market == "Equities":
-        symbol_pool = EQUITIES
-    elif market == "FX":
-        symbol_pool = FX
-    elif market == "Commodities":
-        symbol_pool = COMMODITIES
-    else:
-        symbol_pool = EQUITIES[:4] + FX[:3] + COMMODITIES[:3]
-
-    selected = st.multiselect("Symbols", symbol_pool, default=symbol_pool[:1], max_selections=4)
+    st.caption("Symbol: SPY")
+    selected = ["SPY"]
     period = st.selectbox("Period", PERIOD_OPTIONS, index=1)
     interval = "1d"
     st.caption("Data interval: Daily OHLC only (1d)")
@@ -127,9 +117,6 @@ with st.sidebar:
 if not selected:
     st.info("👈 Select at least one symbol in the sidebar.")
     st.stop()
-
-if len(selected) > 3:
-    st.warning("Selected many symbols. If Yahoo rate-limits, reduce to 1-3 symbols for more reliable live data.")
 
 # Display charts and signals
 rows = []
