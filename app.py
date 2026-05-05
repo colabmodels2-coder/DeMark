@@ -171,6 +171,29 @@ with st.sidebar:
     )
     st.session_state.watchlist = selected
 
+    st.divider()
+    st.subheader("📈 Indicators")
+    
+    # Initialize indicator settings in session
+    if "show_td_sequential" not in st.session_state:
+        st.session_state.show_td_sequential = True
+    if "show_td_wave" not in st.session_state:
+        st.session_state.show_td_wave = False
+    
+    st.session_state.show_td_sequential = st.checkbox(
+        "TD Sequential",
+        value=st.session_state.show_td_sequential,
+        help="Show setup counts (1-9), countdown counts (1-13), and TDST levels"
+    )
+    
+    st.session_state.show_td_wave = st.checkbox(
+        "TD D-Wave",
+        value=st.session_state.show_td_wave,
+        help="Show wave structure (1-5, A-B-C) and Fibonacci projections"
+    )
+
+    st.divider()
+
     period = st.selectbox("Period", PERIOD_OPTIONS, index=1)
     interval = "1d"
     st.caption("Data interval: Daily OHLC only (1d)")
@@ -235,14 +258,26 @@ for symbol in selected:
     )
 
     st.subheader(f"{symbol}")
-    fig_daily = build_figure(demark_df_daily, symbol, timeframe_label="Daily")
+    fig_daily = build_figure(
+        demark_df_daily,
+        symbol,
+        timeframe_label="Daily",
+        show_td_sequential=st.session_state.show_td_sequential,
+        show_td_wave=st.session_state.show_td_wave,
+    )
     st.plotly_chart(fig_daily, use_container_width=True)
 
     st.subheader(f"{symbol} — Weekly")
     if demark_df_weekly.empty:
         st.info("Not enough data to build weekly chart.")
     else:
-        fig_weekly = build_figure(demark_df_weekly, symbol, timeframe_label="Weekly")
+        fig_weekly = build_figure(
+            demark_df_weekly,
+            symbol,
+            timeframe_label="Weekly",
+            show_td_sequential=st.session_state.show_td_sequential,
+            show_td_wave=st.session_state.show_td_wave,
+        )
         st.plotly_chart(fig_weekly, use_container_width=True)
 
     with st.expander(f"📋 Insights: {symbol}", expanded=True):
