@@ -155,20 +155,39 @@ if not selected:
 # Display charts and signals
 rows = []
 for symbol in selected:
-    data = load_ohlc(symbol=symbol, period=period, interval=interval)
-    if data.empty:
+    # Always fetch 5y so TD Sequential signals are computed on full history.
+    # The selected period only controls how far back the *chart* displays.
+    data_full = load_ohlc(symbol=symbol, period="5y", interval=interval)
+    if data_full.empty:
         st.warning(f"⚠️ No data for {symbol}.")
         continue
 
-    demark_df_daily = apply_demark(data)
-    latest = demark_df_daily.iloc[-1]
+    # Compute signals on full 5y history
+    demark_full_daily = apply_demark(data_full)
 
-    weekly = (
-        data.resample("W-FRI")
+    # Trim display window to selected period for chart rendering
+    period_days = {"6mo": 183, "1y": 365, "2y": 730, "5y": 1825}.get(period, 365)
+    cutoff = pd.Timestamp("today") - pd.Timedelta(days=period_days)
+    demark_df_daily = demark_full_daily[demark_full_daily.index >= cutoff]
+    if demark_df_daily.empty:
+        demark_df_daily = demark_full_daily  # fallback: show all
+
+    # Insights always use the latest state from full history
+    latest = demark_full_daily.iloc[-1]
+
+    # Weekly: resample full history, compute signals, then trim display
+    weekly_full = (
+        data_full.resample("W-FRI")
         .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
         .dropna()
     )
-    demark_df_weekly = apply_demark(weekly) if not weekly.empty else pd.DataFrame()
+    demark_full_weekly = apply_demark(weekly_full) if not weekly_full.empty else pd.DataFrame()
+    demark_df_weekly = (
+        demark_full_weekly[demark_full_weekly.index >= cutoff]
+        if not demark_full_weekly.empty else pd.DataFrame()
+    )
+    if not demark_full_weekly.empty and demark_df_weekly.empty:
+        demark_df_weekly = demark_full_weekly  # fallback: show all
 
     rows.append(
         {
@@ -198,10 +217,10 @@ for symbol in selected:
 
     with st.expander(f"📋 Insights: {symbol}", expanded=True):
         st.markdown("#### Daily")
-        st.markdown(build_insight_text(demark_df_daily, symbol))
-        if not demark_df_weekly.empty:
+        st.markdown(build_insight_text(demark_full_daily, symbol))
+        if not demark_full_weekly.empty:
             st.markdown("#### Weekly")
-            st.markdown(build_insight_text(demark_df_weekly, f"{symbol} (Weekly)"))
+            st.markdown(build_insight_text(demark_full_weekly, f"{symbol} (Weekly)"))
 
 # Summary table
 if rows:
