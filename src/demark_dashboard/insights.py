@@ -141,7 +141,7 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
             countdown_text = "Buy countdown initiated. Waiting for first qualifying bar (Close ≤ Low[2])."
 
         if recycled_buy:
-            countdown_text += " [Recycled: a subsequent overlapping same-direction Setup reached the recycle threshold and replaced the prior 13 with R]"
+            countdown_text += " [Recycled: a same-direction Setup extended to 18 before countdown completion, so the developing countdown was reset (R)]"
         if sell_setup > 0 and sell_setup < 9:
             countdown_text += f" Note: sell setup {sell_setup}/9 forming — if it reaches 9, this countdown is cancelled."
 
@@ -175,7 +175,7 @@ def build_insight_text(df: pd.DataFrame, symbol: str) -> str:
             countdown_text = "Sell countdown initiated. Waiting for first qualifying bar (Close ≥ High[2])."
 
         if recycled_sell:
-            countdown_text += " [Recycled: a subsequent overlapping same-direction Setup reached the recycle threshold and replaced the prior 13 with R]"
+            countdown_text += " [Recycled: a same-direction Setup extended to 18 before countdown completion, so the developing countdown was reset (R)]"
         if buy_setup > 0 and buy_setup < 9:
             countdown_text += f" Note: buy setup {buy_setup}/9 forming — if it reaches 9, this countdown is cancelled."
 
