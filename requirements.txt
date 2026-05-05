@@ -1,0 +1,8 @@
+streamlit>=1.44
+pandas>=2.2
+numpy>=1.26
+plotly>=5.20
+yfinance>=0.2.54
+python-dateutil>=2.9
+certifi>=2024.0
+curl_cffi<0.15
