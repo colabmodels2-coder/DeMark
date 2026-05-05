@@ -97,10 +97,21 @@ def load_ohlc(symbol: str, period: str = "1y", interval: str = "1d") -> pd.DataF
     # Enforce daily data only to reduce provider throttling and meet dashboard scope.
     interval = "1d"
     yahoo_error = None
+
+    # Primary Yahoo path: yf.download tends to be more stable across yfinance versions.
     for attempt in range(3):
         try:
-            ticker = yf.Ticker(symbol)
-            df = ticker.history(period=period, interval=interval, auto_adjust=False, progress=False)
+            df = yf.download(
+                symbol,
+                period=period,
+                interval=interval,
+                auto_adjust=False,
+                progress=False,
+                threads=False,
+            )
+
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
 
             if not df.empty:
                 cols = ["Open", "High", "Low", "Close", "Volume"]
@@ -113,6 +124,25 @@ def load_ohlc(symbol: str, period: str = "1y", interval: str = "1d") -> pd.DataF
             yahoo_error = e
             if attempt < 2:
                 time.sleep(1.25 * (attempt + 1))
+
+    # Secondary Yahoo path: Ticker.history fallback without unsupported kwargs.
+    if yahoo_error is not None:
+        for attempt in range(2):
+            try:
+                ticker = yf.Ticker(symbol)
+                df = ticker.history(period=period, interval=interval, auto_adjust=False)
+
+                if not df.empty:
+                    cols = ["Open", "High", "Low", "Close", "Volume"]
+                    df = df[cols].copy()
+                    if isinstance(df.index, pd.DatetimeIndex):
+                        df.index = df.index.tz_localize(None)
+                    df.dropna(inplace=True)
+                    return df
+            except Exception as e:
+                yahoo_error = e
+                if attempt < 1:
+                    time.sleep(1.5)
 
     # Daily Stooq fallback can often bypass temporary Yahoo rate limits.
     try:
