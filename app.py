@@ -140,11 +140,41 @@ st.caption(
 
 with st.sidebar:
     st.header("⚙️ Configuration")
-    st.caption("Symbol: SPY")
-    selected = ["SPY"]
+
+    universe = sorted(set(EQUITIES + FX + COMMODITIES))
+    if "watchlist" not in st.session_state:
+        st.session_state.watchlist = ["SPY"]
+
+    ticker_query = st.text_input("Ticker search / add", placeholder="e.g. AAPL, MSFT, EURUSD=X")
+    if ticker_query:
+        q = ticker_query.strip().upper()
+        quick_matches = [s for s in universe if q in s.upper()][:8]
+        if quick_matches:
+            st.caption("Matches: " + ", ".join(quick_matches))
+        else:
+            st.caption("No preset match. You can still add custom Yahoo ticker.")
+
+    if st.button("Add ticker", use_container_width=True):
+        candidate = ticker_query.strip().upper()
+        if candidate:
+            if candidate not in st.session_state.watchlist:
+                st.session_state.watchlist.append(candidate)
+                st.success(f"Added {candidate}")
+            else:
+                st.info(f"{candidate} already in watchlist")
+
+    selected = st.multiselect(
+        "Watchlist",
+        options=sorted(set(universe + st.session_state.watchlist)),
+        default=st.session_state.watchlist,
+        help="Selections are shared with your session watchlist and use in-app cached history.",
+    )
+    st.session_state.watchlist = selected
+
     period = st.selectbox("Period", PERIOD_OPTIONS, index=1)
     interval = "1d"
     st.caption("Data interval: Daily OHLC only (1d)")
+    st.caption("History cache: shared in-app cache (server memory)")
 
     st.divider()
 
