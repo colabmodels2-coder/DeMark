@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import streamlit as st
 
-from src.demark_dashboard.charts import build_figure
-from src.demark_dashboard.config import COMMODITIES, EQUITIES, FX, INTERVAL_OPTIONS, PERIOD_OPTIONS
-from src.demark_dashboard.data import load_ohlc
-from src.demark_dashboard.indicators import apply_demark
-from src.demark_dashboard.insights import build_insight_text
+# Ensure local package imports work in environments that don't auto-add ./src to PYTHONPATH.
+ROOT_DIR = Path(__file__).resolve().parent
+SRC_DIR = ROOT_DIR / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from demark_dashboard.charts import build_figure
+from demark_dashboard.config import COMMODITIES, EQUITIES, FX, INTERVAL_OPTIONS, PERIOD_OPTIONS
+from demark_dashboard.data import load_ohlc
+from demark_dashboard.indicators import apply_demark
+from demark_dashboard.insights import build_insight_text
 
 
 st.set_page_config(page_title="DeMark Market Dashboard", layout="wide")
